@@ -124,14 +124,14 @@ end
 
 **Resolution, per value (or per element when `many: true`):**
 
-| identifier present? | `allowing` | `with` | behaviour |
+| id_field present? | `allowing` | `with` | behaviour |
 |---|---|---|---|
 | value absent | — | — | skipped (or `required` → error) |
 | yes | yes | no  | id validated ∈ `allowing` → **link** (assign the object) |
 | yes | yes | yes | id validated ∈ `allowing` → **update** via nested attributes |
 | yes | no  | yes | **update** via nested attributes (no scope check) |
 | no  | —   | yes | **build** (create) via the sub-mapper |
-| no  | yes | no  | error — an identifier is required to link |
+| no  | yes | no  | error — an id_field is required to link |
 
 - **References assign the loaded object(s)**, not an id — the record fetched for validation is the
   one assigned (one fewer query, no re-load). A bare id (`{ call_origin: 5 }`) is accepted as well as
@@ -196,14 +196,14 @@ end
 
 ## Attribute / association options
 
-`from`, `identifier`, `allowing`, `with`, `required`, `save`, `default`, `default_on_invalid`, `of`,
+`from`, `id_field`, `allowing`, `with`, `required`, `save`, `default`, `default_on_invalid`, `of`,
 `type`, `multiple` are block methods; `many:` and the cardinality belong to `association`. `map_if`
 is a block method (see below).
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `from` | `*keys` | `[name]` | Key path for `Hash#dig` into the source params (the section, for an association) — was `at` |
-| `identifier` | Symbol | `:id` | Reference/upsert: the key read inside the `from` section **and** the `find_by` column — replaces `field` |
+| `id_field` | Symbol | `:id` | Reference/upsert: the key read inside the `from` section **and** the `find_by` column — replaces `field` |
 | `allowing` | various | `nil` | Allowed values/records — Array, AR scope, or lambda. Reference mode of `association`; also `:enumerated`/`:custom` |
 | `with` | class, lambda | `nil` | Sub-mapper (+ optional context lambda) for an `association` built/upserted via `accepts_nested_attributes_for` |
 | `many:` | Bool | `false` | `association` cardinality — `true` ⇒ 1‑N (kwarg on `association`) |
@@ -215,7 +215,7 @@ is a block method (see below).
 | `type` | Symbol | `nil` | Scalar validation type (`:integer`, `:float`, `:date`, `:boolean`, `:enumerated`, `:custom`) or `:array` |
 | `of` | Symbol | `nil` | Element type for a `type :array` of **scalars** |
 | `multiple` | Bool | `false` | `:enumerated` only — accept an array of values |
-| `field` | Symbol | `:id` | **Deprecated** — use `identifier` |
+| `field` | Symbol | `:id` | **Deprecated** — use `id_field` |
 | `condition` | Proc | `nil` | **Deprecated** — use `map_if` |
 
 ### `required`
@@ -280,7 +280,7 @@ end
 ### `:referential` *(deprecated — use `association … allowing`)*
 
 > Looks up an ActiveRecord record by the given value and assigns its **id**. Superseded by the
-> `association` reference mode, which assigns the **object** and reads the section + `identifier`:
+> `association` reference mode, which assigns the **object** and reads the section + `id_field`:
 >
 > ```ruby
 > # before
@@ -297,7 +297,7 @@ end
 > end
 > ```
 >
-> A custom lookup column was `field :name`; it is now `identifier :name`.
+> A custom lookup column was `field :name`; it is now `id_field :name`.
 >
 > **Unchanged-value tolerance** (legacy `:referential` only): if the target already has the same
 > value, the record is allowed even if it no longer matches `allowing` (e.g. soft-deleted). The new
@@ -583,7 +583,7 @@ removed in a later release. See `CHANGELOG.md`.
 | `type :association` (1‑1 record) | `association :name do with … end` |
 | `type :array` + `with` (1‑N records) | `association :name, many: true do with … end` |
 | `type :array, of: :referential` | `association :name, many: true do allowing … end` |
-| `field :col` | `identifier :col` |
+| `field :col` | `id_field :col` |
 | `condition -> { … }` | `map_if -> { … }` |
 | `at :a, :b` | `from :a, :b` |
 

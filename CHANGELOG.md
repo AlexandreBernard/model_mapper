@@ -50,7 +50,7 @@ end
 
 ### Added
 
-- `identifier` option (default `:id`): the key read inside the `from` section **and** the
+- `id_field` option (default `:id`): the key read inside the `from` section **and** the
   `find_by` column in reference/upsert mode.
 - `map_if` block method for the processing condition (named `map_if` because `if` is a Ruby
   keyword and cannot be a bareword DSL method).
@@ -61,7 +61,7 @@ end
 - `type :association` → `association … do with … end`
 - `type :array` + `with` → `association …, many: true do with … end`
 - `type :array, of: :referential` → `association …, many: true do allowing … end`
-- `field` → `identifier`
-- `condition` → the `if:` option
+- `field` → `id_field`
+- `condition` → `map_if`
 
 (`type :array, of: <scalar>` is unchanged.)

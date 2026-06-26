@@ -669,10 +669,11 @@ module ModelMapper
     raise ModelMapper::InvalidValueError.new(field_path, details: I18n.t('errors.invalid_value_details.invalid_referential'))
   end
 
-  # The id of a reference element: the `identifier` key of a hash section (indifferent), or the value
-  # itself when the payload passes a bare id.
+  # The id of a reference element: the `identifier` key of a section (a Hash or an
+  # ActionController::Parameters — anything that digs), indifferent to symbol/string keys; or the
+  # value itself when the payload passes a bare id.
   def reference_id(element, identifier)
-    return element unless element.is_a?(Hash)
+    return element unless element.respond_to?(:dig)
 
     element[identifier] || element[identifier.to_s]
   end

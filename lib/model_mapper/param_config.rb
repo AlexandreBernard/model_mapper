@@ -47,14 +47,14 @@ module ModelMapper
 
     # Identifier used in reference/upsert mode: the key read inside the `from` section AND the column
     # matched with `find_by` (defaults to :id). Replaces the older `field`.
-    def identifier(value)
+    def id_field(value)
       @field_value = value
     end
 
-    # @deprecated Use {#identifier} instead. Kept working, emits a deprecation warning.
+    # @deprecated Use {#id_field} instead. Kept working, emits a deprecation warning.
     def field(value)
-      warn "[ModelMapper] `field` is deprecated; use `identifier` instead (attribute `#{@name}`)."
-      identifier(value)
+      warn "[ModelMapper] `field` is deprecated; use `id_field` instead (attribute `#{@name}`)."
+      id_field(value)
     end
 
     def allowing(value)

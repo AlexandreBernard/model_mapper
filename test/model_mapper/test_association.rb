@@ -33,16 +33,33 @@ class RefCategoryMapper
 
 end
 
-# 1-1 reference with a custom identifier (lookup by name instead of id).
+# 1-1 reference with a custom id_field (lookup by name instead of id).
 class RefCategoryByNameMapper
 
   include ModelMapper
 
   map_model do
     association :category do
-      identifier :name
+      id_field :name
       allowing -> { Category.all }
     end
+  end
+
+end
+
+# Minimal stand-in for ActionController::Parameters: digs/indexes like a hash but is NOT a Hash.
+class ParamsLike
+
+  def initialize(hash) = @hash = hash
+
+  def dig(*keys)
+    value = @hash.dig(*keys)
+    value.is_a?(Hash) ? self.class.new(value) : value
+  end
+
+  def [](key)
+    value = @hash[key] || @hash[key.to_s]
+    value.is_a?(Hash) ? self.class.new(value) : value
   end
 
 end
@@ -173,12 +190,21 @@ class TestAssociation < Minitest::Test
     assert_equal category.id, mapper.widget.category.id
   end
 
-  def test_reference_custom_identifier
+  def test_reference_custom_id_field
     category = Category.create!(name: 'ByName', enabled: true)
     mapper   = RefCategoryByNameMapper.map_to_model(Widget.new, { category: { name: 'ByName' } })
 
     assert_predicate mapper, :valid?
     assert_equal category.id, mapper.record.category.id
+  end
+
+  # The section is read even when it is a Parameters-like object (digs but is not a Hash).
+  def test_reference_reads_a_non_hash_section
+    category = Category.create!(name: 'FromParams', enabled: true)
+    mapper   = RefCategoryMapper.map_to_model(Widget.new, ParamsLike.new(category: { id: category.id }))
+
+    assert_predicate mapper, :valid?
+    assert_equal category.id, mapper.widget.category.id
   end
 
   # --- 1-1 build ------------------------------------------------------------
