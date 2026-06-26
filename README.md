@@ -72,46 +72,88 @@ end
 
 Both accept a Symbol. Symbols starting with `@` are resolved as instance variables; others are sent as method calls on the service instance.
 
-### Associations: `type :association` (1‑1) and `type :array` (1‑N)
+### Associations: `association`
 
-Map nested objects through their own sub-mappers, à la Blueprinter. The attribute name is the
-association's nested-attributes name (`vehicle_attributes` ⇒ association `vehicle`); the sub-record
-is built on the target association and validated by its sub-mapper.
+A single `association` declaration covers every way to link a record (or records) to the target:
+**1‑1 or 1‑N**, **by reference** (an existing record, by id, scoped) and/or **by construction**
+(a nested record built via a sub-mapper). It supersedes the older `type :referential`,
+`type :association`, and `type :array` (carrying records) — see *Deprecations* below.
 
 ```ruby
 map_model do
-  attribute :vehicle_attributes do      # 1‑1 (belongs_to / has_one)
-    from :vehicle
-    type :association
-    with VehicleMapper
+  # 1‑1 reference — link an existing, scoped record; the OBJECT is assigned (not the id).
+  association :call_origin do
+    allowing -> { CallOrigin.where(company: user.companies) }
+    required true
   end
 
-  attribute :missions_attributes do     # 1‑N (has_many)
+  # 1‑1 build — nested record built by a sub-mapper (via accepts_nested_attributes_for).
+  association :vehicle_attributes do
+    from :vehicle
+    with VehicleMapper, -> { { company: call_origin.company } }
+  end
+
+  # 1‑N build.
+  association :missions_attributes, many: true do
     from :missions
-    type :array
-    with MissionMapper, -> { { company: company, user: user } }
+    with MissionMapper, -> { { company: call_origin.company } }
+  end
+
+  # 1‑N reference — link existing, scoped records; the OBJECTS are assigned.
+  association :tags, many: true do
+    allowing -> { current_company.tags }
+  end
+
+  # Upsert — build/update via the sub-mapper, every provided id validated against `allowing`.
+  association :missions_attributes, many: true do
+    from :missions
+    with MissionMapper, -> { { company: call_origin.company } }
+    allowing -> { call_origin.company.missions }
   end
 end
 ```
 
-- **`with SubMapper`** — the sub-mapper class (itself an `include ModelMapper`).
-- **second argument** — an optional lambda evaluated in the parent mapper to build the sub-mapper's
-  keyword context (so derived values like a scoped company flow down).
-- Sub-mapper errors are merged into the parent under dotted, path-prefixed keys: `vehicle.immat`,
-  `missions.0.driver`. Each association's records are validated by its sub-mapper, so the parent does
-  not double-report them. An absent payload section is not built; a present-but-empty `{}` is built
-  and validated (its required sub-fields then surface).
+**Two axes, both explicit.**
+
+- **Destination is the 1st argument — never inferred.** It is the setter actually called on the
+  target. In *reference* mode you name the association (`:call_origin` ⇒ `call_origin=`, the object);
+  in *build* mode you name the nested-attributes writer (`:vehicle_attributes` ⇒
+  `vehicle_attributes=`, so the model still needs `accepts_nested_attributes_for :vehicle`).
+- **Cardinality** — 1‑1 by default, `many: true` for 1‑N. (Not inferred from ActiveRecord.)
+- **Resolution** — `allowing` (reference) and/or `with` (build); composing both gives upsert.
+
+**Resolution, per value (or per element when `many: true`):**
+
+| identifier present? | `allowing` | `with` | behaviour |
+|---|---|---|---|
+| value absent | — | — | skipped (or `required` → error) |
+| yes | yes | no  | id validated ∈ `allowing` → **link** (assign the object) |
+| yes | yes | yes | id validated ∈ `allowing` → **update** via nested attributes |
+| yes | no  | yes | **update** via nested attributes (no scope check) |
+| no  | —   | yes | **build** (create) via the sub-mapper |
+| no  | yes | no  | error — an identifier is required to link |
+
+- **References assign the loaded object(s)**, not an id — the record fetched for validation is the
+  one assigned (one fewer query, no re-load). A bare id (`{ call_origin: 5 }`) is accepted as well as
+  `{ call_origin: { id: 5 } }`.
+- **`with SubMapper, -> { context }`** — the sub-mapper class and an optional lambda (evaluated in the
+  parent) building its keyword context. Sub-mapper errors merge under path-prefixed keys
+  (`vehicle.immat`, `missions.0.driver`). An absent payload section is not built; a present-but-empty
+  `{}` is built and validated; an empty array yields zero records.
+- **Optional by default** — an absent section is fine; add `required true` to demand it. Out-of-scope
+  or unknown ids are rejected (never silently dropped), keyed on the params path (`call_origin.id`,
+  `missions.2.id`).
 
 ### Arrays of scalars: `type :array` + `of`
 
-`type :array` always needs an **explicit, mandatory** element strategy — `with` (array of records,
-above) or `of` (array of scalars). Declaring `type :array` with neither, with both, or `of` outside
-an array raises `ModelMapper::ConfigurationError` on the first map.
+For an array of **scalars**, `type :array` needs an `of` element strategy (arrays of *records* or
+*referenced ids* now use `association …, many: true`). Declaring `type :array` with neither `of` nor
+`with`, with both, or `of` outside an array raises `ModelMapper::ConfigurationError` on the first map.
 
 `of` names the element type, validated/coerced per element through the same machinery as the scalar
-types: `:referential`, `:string`, `:integer`, `:float`, `:date`, `:boolean`, `:enumerated`,
-`:custom`, or `:any` (accept elements unchanged). Validation fails fast on the first bad element, with
-an indexed field path (e.g. `numbers.2`).
+types: `:string`, `:integer`, `:float`, `:date`, `:boolean`, `:enumerated`, `:custom`, or `:any`
+(accept elements unchanged). Validation fails fast on the first bad element, with an indexed field
+path (e.g. `numbers.2`).
 
 ```ruby
 attribute :numbers do
@@ -124,20 +166,16 @@ attribute :statuses do
   of :enumerated
   allowing %w[open closed]    # the attribute's `allowing` is applied to each element
 end
-
-attribute :category_ids do
-  from :categories
-  type :array
-  of :referential
-  allowing Category.all       # each element looked up; assigned as an array of ids
-end
 ```
 
-- The attribute's `allowing` / `field` apply to every element (so `:referential` / `:enumerated`
-  elements share one scope).
-- `of :referential` assigns the array of resolved **ids** (mirroring the scalar referential).
+- The attribute's `allowing` applies to every element (so `:enumerated` elements share one scope).
 - An empty array is treated as blank (like any empty value): dropped when optional, an error when
   `required`.
+
+> **Use `association`, not `type :array`, for arrays of records or referenced ids.** `type :array`
+> with `with` (array of records) and `of :referential` (array of referenced ids) are **deprecated** in
+> favour of `association …, many: true` (see *Associations* above and *Deprecations* below). `type :array`
+> with a scalar `of` (`:string`, `:integer`, …) stays.
 
 ### `attribute`
 
@@ -145,33 +183,40 @@ Declares a parameter to validate and map. Without a block, it reads `source[name
 
 ```ruby
 attribute :name                       # simple pass-through
-attribute :zone_id do                 # with options
-  from :infraction, :zone, :id
-  type :referential
-  allowing Zone.enabled
+attribute :price do                   # with options
+  type :float
   required true
 end
 ```
 
+(To link/build records, use `association` — see above.)
+
 > **Deprecation:** `at` is the former name of `from` and still works, but emits a deprecation warning.
 > Prefer `from`.
 
-## Attribute Options
+## Attribute / association options
+
+`from`, `identifier`, `allowing`, `with`, `required`, `save`, `default`, `default_on_invalid`, `of`,
+`type`, `multiple` are block methods; `many:` and the cardinality belong to `association`. `map_if`
+is a block method (see below).
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `from` | `*keys` | `[name]` | Key path for `Hash#dig` into the source params (was `at`) |
-| `type` | Symbol | `nil` | Validation type (see below) |
-| `with` | class, lambda | `nil` | Sub-mapper (+ optional context lambda) for `type :association` / `:array` |
-| `of` | Symbol | `nil` | Element type for a `type :array` of scalars |
-| `allowing` | various | `nil` | Allowed values — Array, AR scope, or lambda |
+| `from` | `*keys` | `[name]` | Key path for `Hash#dig` into the source params (the section, for an association) — was `at` |
+| `identifier` | Symbol | `:id` | Reference/upsert: the key read inside the `from` section **and** the `find_by` column — replaces `field` |
+| `allowing` | various | `nil` | Allowed values/records — Array, AR scope, or lambda. Reference mode of `association`; also `:enumerated`/`:custom` |
+| `with` | class, lambda | `nil` | Sub-mapper (+ optional context lambda) for an `association` built/upserted via `accepts_nested_attributes_for` |
+| `many:` | Bool | `false` | `association` cardinality — `true` ⇒ 1‑N (kwarg on `association`) |
+| `map_if` | Proc | `nil` | Block method controlling whether the attribute/association is processed — replaces `condition` |
 | `required` | Bool / Proc | `false` | Whether `nil`/blank raises an error |
-| `field` | Symbol | `:id` | Lookup field for `:referential` type |
-| `multiple` | Bool | `false` | Accept an array of values |
 | `save` | Bool | `true` | Include in `assign_attributes`; `false` = validate-only |
 | `default` | value / Proc | `nil` | Fallback when the source value is `nil`/missing |
 | `default_on_invalid` | Bool | `false` | Use `default` when validation fails instead of raising |
-| `condition` | Proc | `nil` | Lambda controlling whether the attribute is processed |
+| `type` | Symbol | `nil` | Scalar validation type (`:integer`, `:float`, `:date`, `:boolean`, `:enumerated`, `:custom`) or `:array` |
+| `of` | Symbol | `nil` | Element type for a `type :array` of **scalars** |
+| `multiple` | Bool | `false` | `:enumerated` only — accept an array of values |
+| `field` | Symbol | `:id` | **Deprecated** — use `identifier` |
+| `condition` | Proc | `nil` | **Deprecated** — use `map_if` |
 
 ### `required`
 
@@ -193,19 +238,24 @@ default -> { Time.current }
 default ->(params) { params[:fallback_name] }
 ```
 
-### `condition`
+### `map_if`
 
-Controls whether the attribute is processed at all. The lambda is executed via `instance_exec` on the service instance, so it can access instance variables.
+Controls whether the attribute/association is processed at all. The lambda is executed via
+`instance_exec` on the service instance, so it can access instance variables. (Named `map_if` because
+`if` is a Ruby keyword and cannot be a bareword DSL method.)
 
 ```ruby
 attribute :status do
-  condition -> { @include_status }
+  map_if -> { @include_status }
 end
 
 # With arguments:
-condition ->(target) { target.new_record? }
-condition ->(target, source_params) { source_params.key?(:status) }
+map_if ->(target) { target.new_record? }
+map_if ->(target, source_params) { source_params.key?(:status) }
 ```
+
+> **Deprecation:** `condition` is the former name and still works, but emits a deprecation warning.
+> Prefer `map_if`.
 
 ## Validation Types
 
@@ -227,27 +277,31 @@ attribute :tags do
 end
 ```
 
-### `:referential`
+### `:referential` *(deprecated — use `association … allowing`)*
 
-Looks up an ActiveRecord record by the given value. The `allowing` scope constrains which records are valid.
-
-```ruby
-attribute :zone_id do
-  from :zone, :id
-  type :referential
-  allowing Zone.enabled
-end
-
-# Lookup by a custom field:
-attribute :category_id do
-  from :category, :name
-  type :referential
-  field :name
-  allowing Category.enabled
-end
-```
-
-**Unchanged-value tolerance**: If the target already has the same value (e.g. `widget.category_id == params[:category][:id]`), the record is allowed even if it no longer matches the `allowing` scope (e.g. soft-deleted). This prevents errors when re-saving unchanged associations.
+> Looks up an ActiveRecord record by the given value and assigns its **id**. Superseded by the
+> `association` reference mode, which assigns the **object** and reads the section + `identifier`:
+>
+> ```ruby
+> # before
+> attribute :zone_id do
+>   from :zone, :id
+>   type :referential
+>   allowing Zone.enabled
+> end
+>
+> # after
+> association :zone do
+>   from :zone
+>   allowing -> { Zone.enabled }
+> end
+> ```
+>
+> A custom lookup column was `field :name`; it is now `identifier :name`.
+>
+> **Unchanged-value tolerance** (legacy `:referential` only): if the target already has the same
+> value, the record is allowed even if it no longer matches `allowing` (e.g. soft-deleted). The new
+> `association` reference mode does not yet carry this tolerance.
 
 ### `:custom`
 
@@ -434,16 +488,17 @@ After validation, each attribute value is stored as an instance variable on the 
 attribute :name    # -> @name = validated_value
 ```
 
-For `:referential` attributes ending in `_id`, both the ID and the record are stored:
+An `association` reference stores the resolved object under the association name:
 
 ```ruby
-attribute :category_id do
-  type :referential
-  allowing Category.enabled
+association :category do
+  allowing -> { Category.enabled }
 end
-# -> @category_id = record.id
-# -> @category    = record
+# -> @category = record   (and target.category = record)
 ```
+
+(Legacy `:referential` attributes ending in `_id` store both `@category_id = record.id` and
+`@category = record`.)
 
 Attributes with `save: false` are still stored as instance variables — they are only excluded from `assign_attributes`.
 
@@ -516,6 +571,24 @@ All errors expose a `field` attribute (String, dot-separated key path like `"inf
 - `errors` — `Hash<String, Error>` of field => error
 - `fields` — `Array<String>` of failed field names
 - `first_error` — the first collected error
+
+## Deprecations
+
+Superseded since **0.4.1**. The old forms still work and emit a one-time warning; they will be
+removed in a later release. See `CHANGELOG.md`.
+
+| Deprecated | Replacement |
+|---|---|
+| `type :referential` | `association :name do allowing … end` (assigns the **object**, not the id) |
+| `type :association` (1‑1 record) | `association :name do with … end` |
+| `type :array` + `with` (1‑N records) | `association :name, many: true do with … end` |
+| `type :array, of: :referential` | `association :name, many: true do allowing … end` |
+| `field :col` | `identifier :col` |
+| `condition -> { … }` | `map_if -> { … }` |
+| `at :a, :b` | `from :a, :b` |
+
+`type :array` with a scalar `of` (`:string`, `:integer`, `:float`, `:date`, `:boolean`,
+`:enumerated`, `:custom`, `:any`) is **not** deprecated.
 
 ## Tests
 
