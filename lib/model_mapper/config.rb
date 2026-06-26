@@ -63,7 +63,7 @@ module ModelMapper
       @on_save_hook = block
     end
 
-    def attribute(name, &block)
+    def attribute(name, **options, &block)
       # Get existing attribute config (from parent) or create new one
       @params[name] ||= ParamConfig.new(name)
 
@@ -74,7 +74,23 @@ module ModelMapper
         @params[name].merge!(new_config)
       end
 
+      apply_options(@params[name], options)
       @params[name]
+    end
+
+    # Unified association: links existing record(s) by id (`allowing`), builds/updates nested
+    # record(s) via a sub-mapper (`with`), or both (upsert). Cardinality is explicit (`many: true`).
+    # The 1st argument is the destination (the setter actually called) — never inferred. See the
+    # ParamConfig reference/build/upsert predicates and ModelMapper's resolution.
+    #
+    #   association :call_origin do allowing -> { ... } end                 # 1-1 reference
+    #   association :vehicle_attributes do from :vehicle; with VMapper end  # 1-1 build
+    #   association :missions_attributes, many: true do with MMapper end    # 1-n build
+    #   association :tags, many: true do allowing -> { ... } end            # 1-n reference
+    def association(name, **options, &block)
+      param = attribute(name, **options, &block)
+      finalize_association!(param)
+      param
     end
 
     # Alias for the mapped-record accessor (e.g. `record_alias :mission` ⇒ #mission == #record).
@@ -92,9 +108,34 @@ module ModelMapper
       @from_source ||= :@params
       @to_target   ||= :@record
       @params.each_value { |param_config| validate_array_param!(param_config) }
+      unless @deprecations_warned
+        @params.each_value { |param_config| validate_association_param!(param_config) }
+        @deprecations_warned = true
+      end
     end
 
     private
+
+    # Apply the keyword options accepted by `attribute`/`association` (currently `many:`). The
+    # processing condition is set with the `map_if` block method, not an option.
+    def apply_options(param_config, options)
+      param_config.many(options[:many]) if options.key?(:many)
+    end
+
+    # Resolve the resolution mode of an `association` from what the block declared:
+    #   only `allowing` → reference (type :reference, assigns the object) ;
+    #   `with` (± `allowing`) → build/upsert (sub-mapper + accepts_nested_attributes_for) ;
+    #   neither → configuration error.
+    def finalize_association!(param_config)
+      if param_config.mapper?
+        # build or upsert — handled by the association/mapper path; nothing else to set.
+      elsif param_config.allowing?
+        param_config.type(:reference)
+      else
+        raise ModelMapper::ConfigurationError,
+              "association `#{param_config.name}` requires `allowing` (reference) and/or `with` (build)"
+      end
+    end
 
     # `type :array` must declare exactly one element strategy: `mapper` (array of records) or `of`
     # (array of scalars). `of` is also rejected outside an array, and must name a known element type.
@@ -119,6 +160,27 @@ module ModelMapper
         raise ModelMapper::ConfigurationError,
               "attribute `#{param_config.name}`: unknown `of` type #{param_config.of_value.inspect} " \
               "(expected one of #{ARRAY_ELEMENT_TYPES.join(', ')})"
+      end
+    end
+
+    # Deprecation: the old association-flavored types are superseded by `association`. (`type :array`
+    # of scalars via `of` stays.) Warned once at class load; behavior is unchanged for now.
+    def validate_association_param!(param_config)
+      case param_config.type_value
+      when :referential
+        warn "[ModelMapper] `type :referential` is deprecated; use `association #{param_config.name.inspect} " \
+             'do allowing … end` (attribute now assigns the object, not the id).'
+      when :association
+        warn "[ModelMapper] `type :association` is deprecated; use `association #{param_config.name.inspect} " \
+             'do with … end`.'
+      when :array
+        if param_config.mapper?
+          warn "[ModelMapper] `type :array` + `with` is deprecated; use " \
+               "`association #{param_config.name.inspect}, many: true do with … end`."
+        elsif param_config.of_value == :referential
+          warn "[ModelMapper] `type :array, of: :referential` is deprecated; use " \
+               "`association #{param_config.name.inspect}, many: true do allowing … end`."
+        end
       end
     end
 

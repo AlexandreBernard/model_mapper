@@ -66,14 +66,16 @@ class TestConfig < Minitest::Test
 
   # #validate!
 
-  def test_validate_raises_when_from_missing
+  def test_validate_defaults_from_when_missing
     @config.to :widget
-    assert_raises(ArgumentError) { @config.validate! }
+    @config.validate!
+    assert_equal :@params, @config.from_source
   end
 
-  def test_validate_raises_when_to_missing
+  def test_validate_defaults_to_when_missing
     @config.from :@params
-    assert_raises(ArgumentError) { @config.validate! }
+    @config.validate!
+    assert_equal :@record, @config.to_target
   end
 
   def test_validate_passes_when_complete
