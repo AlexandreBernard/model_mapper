@@ -23,17 +23,16 @@ require_relative 'model_mapper/config'
 #       before_save { |params| } # custom logic before save
 #       after_save  { |params| } # custom logic after save
 #
-#       attribute :zone_id do
-#         from :infraction, :zone, :id
-#         type :referential
-#         allowing Zone.enabled
+#       # Reference an existing, scoped record — assigns the object (validated as `zone.id`):
+#       association :zone do
+#         from :infraction, :zone
+#         allowing -> { Zone.enabled }
 #         required true
 #       end
 #
-#       # Nested object via its own sub-mapper (validated as `vehicle.*`):
-#       attribute :vehicle_attributes do
+#       # Nested object built via its own sub-mapper (validated as `vehicle.*`):
+#       association :vehicle_attributes do
 #         from :vehicle
-#         type :association
 #         with VehicleMapper
 #       end
 #     end
@@ -278,6 +277,8 @@ module ModelMapper
 
     target.valid?
 
+    reverse = params_path_map
+
     target.errors.group_by_attribute.each do |attribute, errs|
       attr = attribute.to_s
       next if errored_fields.include?(attr) ||
@@ -286,10 +287,32 @@ module ModelMapper
       # Association records are validated by their own sub-mappers — don't double-report.
       next if associations.any? { |assoc| attr == assoc || attr.start_with?("#{assoc}.") }
 
-      validation_errors[attr] ||= ModelMapper::RecordError.new(attr, errs.map(&:message).join(', '))
+      # Key the record's own validation on the params path the value came from (e.g. a `status`
+      # validation reported as `info.status`), falling back to the raw attribute for model-internal
+      # fields with no corresponding param (e.g. a callback-assigned column).
+      key = reverse[attr] || attr
+      validation_errors[key] ||= ModelMapper::RecordError.new(key, errs.map(&:message).join(', '))
     end
 
     validation_errors
+  end
+
+  # Map a record's AR attribute names to the params path that feeds them, so the record's own
+  # validations surface on the same path the caller sent (not the internal destination). References
+  # map both the association and its `_id` form to "<path>.<identifier>".
+  def params_path_map
+    self.class.model_mapper_config.params.each_with_object({}) do |(_name, param_config), map|
+      next if param_config.mapper? # built associations are reported by their sub-mappers
+
+      name = param_config.name.to_s
+      if param_config.reference?
+        path = (param_config.keys + [param_config.field_value]).join('.')
+        map[name] = path
+        map["#{name}_id"] = path
+      else
+        map[name] = param_config.keys.join('.')
+      end
+    end
   end
 
   # Build the nested record(s) for every `type :association`/`:array` attribute on `target` and run
@@ -311,14 +334,35 @@ module ModelMapper
 
       context = param_config.with_value ? instance_exec(&param_config.with_value) : {}
 
-      if param_config.array?
+      if param_config.collection?
         sub_source.each_with_index do |item, index|
+          next if upsert_rejected?(param_config, source_params, item, validation_errors, index:)
+
           run_sub_mapper(target, assoc, item, param_config.mapper_value, context, validation_errors, index:)
         end
       else
-        run_sub_mapper(target, assoc, sub_source, param_config.mapper_value, context, validation_errors)
+        unless upsert_rejected?(param_config, source_params, sub_source, validation_errors)
+          run_sub_mapper(target, assoc, sub_source, param_config.mapper_value, context, validation_errors)
+        end
       end
     end
+  end
+
+  # Upsert (`with` + `allowing`): an element that carries an identifier must reference a record in the
+  # `allowing` scope before it is built/updated through nested attributes. An out-of-scope id records a
+  # per-element error and skips that element; an element without an id is a create and passes through.
+  def upsert_rejected?(param_config, source_params, element, validation_errors, index: nil)
+    return false unless param_config.upsert?
+
+    identifier = param_config.field_value
+    id         = reference_id(element, identifier)
+    return false if id.nil? || (id.respond_to?(:empty?) && id.empty?)
+    return false if allowed_values(param_config, source_params).exists?(identifier => id)
+
+    field_path = reference_field_path(param_config, index, identifier)
+    validation_errors[field_path] =
+      ModelMapper::InvalidValueError.new(field_path, details: I18n.t('errors.invalid_value_details.invalid_referential'))
+    true
   end
 
   # Build one nested record on the target's association and map the sub-payload onto it via its
@@ -592,6 +636,53 @@ module ModelMapper
 
   def valid_custom_value?(value, param_config, source_params, _target_object)
     instance_exec(value, source_params, &param_config.allowing_value)
+  end
+
+  # Unified `association` reference mode: resolve the existing record(s) from the payload section,
+  # scoped by `allowing`, and return the OBJECT(s) (assignment then sets the association, not an id).
+  # Collection (`many: true`) → array of records; otherwise a single record.
+  def valid_reference_value?(value, param_config, source_params, _target_object)
+    if param_config.collection?
+      unless value.is_a?(Array)
+        raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'), expected_format: :array)
+      end
+
+      value.each_with_index.map { |element, index| resolve_reference(element, param_config, source_params, index:) }
+    else
+      resolve_reference(value, param_config, source_params)
+    end
+  end
+
+  # Resolve one referenced record: read the identifier (default :id) from the section element, look it
+  # up in the `allowing` scope, and return the record. Missing id → InvalidNilValueError; out-of-scope
+  # or unknown id → InvalidValueError. Both keyed on the params path (e.g. "call_origin.id", "tags.2.id").
+  def resolve_reference(element, param_config, source_params, index: nil)
+    identifier = param_config.field_value
+    id         = reference_id(element, identifier)
+    field_path = reference_field_path(param_config, index, identifier)
+
+    raise ModelMapper::InvalidNilValueError.new(field_path) if id.nil? || (id.respond_to?(:empty?) && id.empty?)
+
+    record = allowed_values(param_config, source_params).find_by(identifier => id)
+    return record if record
+
+    raise ModelMapper::InvalidValueError.new(field_path, details: I18n.t('errors.invalid_value_details.invalid_referential'))
+  end
+
+  # The id of a reference element: the `identifier` key of a hash section (indifferent), or the value
+  # itself when the payload passes a bare id.
+  def reference_id(element, identifier)
+    return element unless element.is_a?(Hash)
+
+    element[identifier] || element[identifier.to_s]
+  end
+
+  # Params path for a reference error: the `from` section path + optional index + the identifier.
+  def reference_field_path(param_config, index, identifier)
+    parts = param_config.keys.dup
+    parts << index unless index.nil?
+    parts << identifier
+    parts.join('.')
   end
 
   def set_default_value(_value, source_params, param_config)

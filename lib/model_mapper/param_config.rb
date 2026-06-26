@@ -45,8 +45,16 @@ module ModelMapper
       @type_value = value
     end
 
-    def field(value)
+    # Identifier used in reference/upsert mode: the key read inside the `from` section AND the column
+    # matched with `find_by` (defaults to :id). Replaces the older `field`.
+    def identifier(value)
       @field_value = value
+    end
+
+    # @deprecated Use {#identifier} instead. Kept working, emits a deprecation warning.
+    def field(value)
+      warn "[ModelMapper] `field` is deprecated; use `identifier` instead (attribute `#{@name}`)."
+      identifier(value)
     end
 
     def allowing(value)
@@ -58,6 +66,12 @@ module ModelMapper
     end
 
     def multiple(value)
+      @multiple_value = value
+    end
+
+    # Cardinality of an `association`: `many: true` ⇒ 1-n (collection). Alias of `multiple`, named for
+    # the association DSL.
+    def many(value)
       @multiple_value = value
     end
 
@@ -73,8 +87,18 @@ module ModelMapper
       @default_on_invalid_value = value
     end
 
-    def condition(value)
+    # Processing condition: the attribute/association is mapped only when this returns truthy. Named
+    # `map_if` because `if` is a Ruby keyword and cannot be a bareword DSL method.
+    #   map_if -> { call_origin.present? }
+    #   map_if ->(target, source) { source[:link].present? }
+    def map_if(value)
       @condition_value = value
+    end
+
+    # @deprecated Use {#map_if} instead. Kept working, emits a deprecation warning.
+    def condition(value)
+      warn "[ModelMapper] `condition` is deprecated; use `map_if` instead (attribute `#{@name}`)."
+      map_if(value)
     end
 
     # Sub-mapper for `type :association` / `type :array`, with an optional context lambda evaluated in
@@ -182,6 +206,28 @@ module ModelMapper
     # Whether a sub-mapper was declared (`with SubMapper`) — array of records / association.
     def mapper?
       !@mapper_value.nil?
+    end
+
+    # Whether an `allowing` scope was declared.
+    def allowing?
+      !@allowing_value.nil?
+    end
+
+    # Unified `association` — reference mode: links existing record(s) by id, scoped, assigning the
+    # OBJECT(s). Set by the `association` DSL when only `allowing` is given (no `with`).
+    def reference?
+      @type_value == :reference
+    end
+
+    # Unified `association` — upsert mode: a sub-mapper builds/updates records (nested attributes) and
+    # `allowing` validates the id of every element that carries one. (`with` + `allowing` together.)
+    def upsert?
+      mapper? && allowing?
+    end
+
+    # Whether this param maps a collection — `type :array` or an `association ..., many: true`.
+    def collection?
+      @multiple_value || array?
     end
 
     # Whether an element type was declared (`of :integer`) — array of scalars.

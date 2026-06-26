@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name          = 'model_mapper'
-  spec.version       = '0.4.0'
+  spec.version       = '0.4.1'
   spec.authors       = ['Modulotech']
   spec.summary       = 'Declarative DSL for mapping JSON/Hash parameters to ActiveModel models'
   spec.description   = 'ModelMapper provides a declarative DSL for mapping hash parameters to ActiveModel models ' \
