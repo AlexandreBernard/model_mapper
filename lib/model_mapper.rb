@@ -267,6 +267,19 @@ module ModelMapper
 
       begin
         allow_nil = !param_config.required?(source_params, target_object)
+
+        # Per-field authorization, weighed before anything else: a refused field is never validated
+        # and nothing it carries is written. It runs INSIDE this begin so a rule that trips over a
+        # value an earlier param failed to map is collected like any other lambda error, instead of
+        # escaping the non-raising map_to_model.
+        default_holder = nil
+        if param_config.authorize?
+          authorized, default_holder = weigh_authorization(param_config, source_params, target_object)
+          unless authorized
+            record_unauthorized!(validation_errors, errored_fields, param_name, param_config)
+            next
+          end
+        end
         # An explicit null (key present, raw value nil) on an optional param: `nullable` decides. A
         # required param keeps refusing it in validate_param, whatever `nullable` says.
         cleared = false
@@ -282,7 +295,7 @@ module ModelMapper
             ModelMapper.warn_explicit_null_once(self.class, param_name, param_config.keys) if param_config.assign?
           end
         end
-        value = validate_param(param_config, source_params, target_object, allow_nil) unless cleared
+        value = validate_param(param_config, source_params, target_object, allow_nil, default_holder) unless cleared
       rescue ModelMapper::InvalidValueError, ModelMapper::InvalidFormatError => e
         validation_errors[e.field] = e
         errored_fields << param_name.to_s
@@ -392,6 +405,47 @@ module ModelMapper
     end
   end
 
+  # Weigh a param's `authorize` rule against the write that would actually happen, and hand back the
+  # `default` if it had to be resolved to find out — a `default` lambda may allocate (a sequence
+  # number), so it must never run twice. Returns [authorized, default_holder].
+  #
+  # The rule is weighed only when a value would land on the record, and is handed THAT value:
+  #   - the payload carries the field         → weighed on the raw value the caller sent ;
+  #   - absent, `default …, authorize: false` → the mapper writes its own value, nothing to weigh ;
+  #   - absent, the default supplies a value  → weighed on that value ;
+  #   - absent and nothing would be written   → nothing to refuse.
+  # `read_path` answers presence and value in a single read, so "was it sent?" always agrees with
+  # "will it be read?".
+  def weigh_authorization(param_config, source_params, target_object)
+    present, raw_value = read_path(source_params, param_config.keys)
+    return [param_config.authorized?(target_object, source_params, self, raw_value), nil] if present
+    return [true, nil] unless param_config.default? && param_config.authorize_default?
+
+    holder = [set_default_value(nil, source_params, param_config)]
+    return [true, holder] if smart_presence(holder.first).nil?
+
+    [param_config.authorized?(target_object, source_params, self, holder.first), holder]
+  end
+
+  # Record a refusal on the params path of the field, and mark the param so the record's own
+  # validation on the same attribute is not reported a second time next to it.
+  def record_unauthorized!(validation_errors, errored_fields, param_name, param_config)
+    field = param_config.keys.join('.')
+    validation_errors[field] = ModelMapper::UnauthorizedFieldError.new(field)
+    errored_fields << param_name.to_s
+  end
+
+  # Weigh an association's `authorize` rule and record the refusal. Keyed on the params path of the
+  # section (e.g. "vehicle"), like every other error a payload can produce. Returning true aborts
+  # the association: no record is built, no sub-mapper runs.
+  def association_unauthorized?(param_config, target, source_params, sub_source, validation_errors)
+    return false unless param_config.authorize?
+    return false if param_config.authorized?(target, source_params, self, sub_source)
+
+    record_unauthorized!(validation_errors, [], param_config.name, param_config)
+    true
+  end
+
   # Build the nested record(s) for every `type :association`/`:array` attribute on `target` and run
   # their sub-mappers, merging each sub error under a dotted, path-prefixed key (e.g. "vehicle.immat",
   # "missions.0.driver"). Returns the list of association names processed (so the parent skips them
@@ -408,6 +462,11 @@ module ModelMapper
       # required sub-fields then surface), and an empty array simply yields zero records.
       _, sub_source = read_path(source_params, param_config.keys)
       next if sub_source.nil?
+
+      # The section is present, so this is a write the caller asked for: weigh the authorization
+      # before building anything. Without this the option would be silently inert on every
+      # sub-mapper association.
+      next if association_unauthorized?(param_config, target, source_params, sub_source, validation_errors)
 
       context = param_config.with_value ? instance_exec(&param_config.with_value) : {}
 
@@ -578,12 +637,14 @@ module ModelMapper
   # @param allow_nil [Boolean] Is nil an allowed value?
   # @return [Object, nil] The validated value
   # @raise [ModelMapper::InvalidValueError] If validation fails
-  def validate_param(param_config, source_params, target_object, allow_nil)
+  def validate_param(param_config, source_params, target_object, allow_nil, default_holder = nil)
     keys = param_config.keys
 
     _, value = read_path(source_params, keys)
-    default_value =
-      (set_default_value(value, source_params, param_config) unless param_config.default_value.nil?)
+    # `default_holder` carries a default the authorization already resolved (a one-element array, so
+    # a resolved nil still counts as resolved); otherwise it is resolved here, once.
+    default_holder ||= [set_default_value(value, source_params, param_config)] if param_config.default?
+    default_value = default_holder&.first
 
     value = smart_presence(value)
     value = smart_presence(default_value) if value.nil?

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Added — per-field authorization with `authorize`
+
+A mapper can now carry the authorization itself, field by field, instead of leaving it to an
+all-or-nothing policy check in the caller:
+
+```ruby
+attribute :car_becoming do
+  authorize -> { JobPolicy.new(Context::Company.new(job.company, user), job).update_car_becoming? }
+end
+```
+
+Same shape as `map_if` (a Proc `instance_exec`ed on the mapper, or a boolean; `authorize:` is also
+accepted as a keyword — anything else is refused at class load, since a value the mapper cannot call
+would read as *always authorized* on a field declared guarded), but a falsy result records a
+`ModelMapper::UnauthorizedFieldError` on the field instead of skipping it in silence — `map_if` returns a success for a write that never
+happened, which is what makes it unfit to carry an authorization. The new error subclasses
+`InvalidValueError`, so it travels through `#errors` / `ValidationError#fields` untouched while
+staying recognizable by class.
+
+The rule is weighed only when a value would actually land on the record — the payload carries the
+field (an explicit `null` counts), or a `default` supplies one — and it is handed that value, so it
+can depend on what is being written and not only on which field. A `default` that resolves to
+nothing is not weighed, and `default …, authorize: false` exempts one whose value is the mapper's
+own doing rather than the caller's. The rule runs before any validation, so a refused field is never
+evaluated, and it applies to associations in reference mode and through a sub-mapper alike — a
+refused association builds nothing.
+
 ### Added
 
 `nullable` on `attribute` and on a reference `association` (block method or `nullable:` keyword) says

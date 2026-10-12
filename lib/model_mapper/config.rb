@@ -71,6 +71,7 @@ module ModelMapper
       if block
         new_config = ParamConfig.new(name)
         new_config.instance_eval(&block)
+        reject_double_authorize!(name, options, new_config)
         @params[name].merge!(new_config)
       end
 
@@ -119,11 +120,23 @@ module ModelMapper
 
     private
 
-    # Apply the keyword options accepted by `attribute`/`association` (`many:`, `nullable:`). The
-    # processing condition is set with the `map_if` block method, not an option.
+    # `authorize` declared twice for the same param — once as a keyword, once in the block — is a
+    # declaration mistake with a silent outcome: the keyword is applied last and drops the block's
+    # rule, so a field reading as guarded would be wide open. Refuse it at class load.
+    def reject_double_authorize!(name, options, new_config)
+      return unless options.key?(:authorize) && new_config.explicitly_set?(:authorize_value)
+
+      raise ModelMapper::ConfigurationError,
+            "attribute `#{name}`: `authorize` is declared twice (as a keyword and in the block); " \
+            'keep one — the keyword would silently drop the block rule'
+    end
+
+    # Apply the keyword options accepted by `attribute`/`association` (`many:`, `nullable:`,
+    # `authorize:`). The processing condition is set with the `map_if` block method, not an option.
     def apply_options(param_config, options)
       param_config.many(options[:many]) if options.key?(:many)
       param_config.nullable(options[:nullable]) if options.key?(:nullable)
+      param_config.authorize(options[:authorize]) if options.key?(:authorize)
     end
 
     # Resolve the resolution mode of an `association` from what the block declared:
