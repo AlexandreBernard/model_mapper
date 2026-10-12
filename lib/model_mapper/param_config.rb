@@ -5,10 +5,28 @@ module ModelMapper
   # Configuration for a single parameter in the mapping DSL
   class ParamConfig
 
+    # The widest rule signature the mapper hands out: (target, source_params, value). A rule may
+    # declare fewer; it is then called with just as many.
+    RULE_ARGUMENTS = 3
+
+    # How many arguments a Proc REQUIRES. A negative arity means optional or splat parameters, and
+    # encodes the required count as -(required + 1).
+    def self.required_arity(rule)
+      rule.arity.negative? ? -rule.arity - 1 : rule.arity
+    end
+
+    # How many arguments a Proc can ACCEPT at most — unbounded with a splat.
+    def self.acceptable_arity(rule)
+      return rule.arity unless rule.arity.negative?
+      return Float::INFINITY if rule.parameters.any? { |type, _| type == :rest }
+
+      rule.parameters.count { |type, _| %i[req opt].include?(type) }
+    end
+
     attr_reader :name
     attr_accessor :at_keys, :type_value, :field_value, :allowing_value, :required_value, :multiple_value, :assign_value,
                   :default_value, :default_on_invalid_value, :condition_value, :mapper_value, :with_value, :of_value,
-                  :nullable_value
+                  :nullable_value, :authorize_value, :default_authorize_value
 
     def initialize(name)
       @name = name
@@ -26,6 +44,8 @@ module ModelMapper
       @mapper_value = nil
       @with_value = nil
       @of_value = nil
+      @authorize_value = nil
+      @default_authorize_value = nil
     end
 
     # DSL methods callable within param block
@@ -101,8 +121,15 @@ module ModelMapper
       raise ModelMapper::SaveOptionRenamedError, @name
     end
 
-    def default(value)
+    # Fallback value when the source value is nil/missing. `authorize: false` exempts it from the
+    # field's `authorize` rule: the default is the mapper's own doing, so it is applied even to a
+    # caller who may not SET the field. Without it, a default that produces a value is weighed like
+    # any other write.
+    #   default 'active'
+    #   default 'active', authorize: false
+    def default(value, authorize: nil)
       @default_value = value
+      @default_authorize_value = authorize unless authorize.nil?
     end
 
     def default_on_invalid(value)
@@ -121,6 +148,37 @@ module ModelMapper
     def condition(value)
       warn "[ModelMapper] `condition` is deprecated; use `map_if` instead (attribute `#{@name}`)."
       map_if(value)
+    end
+
+    # Per-field authorization: may the caller WRITE this field? The attribute/association is mapped
+    # only when this returns truthy; otherwise the field is refused with an
+    # ModelMapper::UnauthorizedFieldError and nothing is written. This is what separates it from
+    # `map_if`, whose falsy result skips the field in silence — a caller then gets a success for a
+    # write that never happened, which is exactly what an authorization must not do.
+    #   authorize -> { JobPolicy.new(context, job).update_car_becoming? }
+    #   authorize ->(target, source, value) { value.nil? || policy.may_set?(value) }
+    #
+    # Only a Proc or a literal boolean is accepted, and anything else is refused at class load. A
+    # truthy value the gem cannot call — `authorize :may_update?`, a policy object, a String — would
+    # otherwise read as "always authorized" on a field declared guarded: a wide-open door that looks
+    # locked, and no test on the happy path would ever see it. `map_if` can stay permissive because
+    # its own shape mistake merely falls back to the default behaviour.
+    def authorize(value)
+      unless value.is_a?(Proc) || value == true || value == false
+        raise ModelMapper::ConfigurationError,
+              "attribute `#{@name}`: `authorize` takes a Proc or a boolean, got #{value.inspect} — " \
+              'a value the mapper cannot call would authorize every write'
+      end
+
+      # A rule demanding more arguments than the mapper hands it would raise on every mapped
+      # request. It is a declaration mistake, so it belongs at class load, next to the shape check.
+      if value.is_a?(Proc) && self.class.required_arity(value) > RULE_ARGUMENTS
+        raise ModelMapper::ConfigurationError,
+              "attribute `#{@name}`: an `authorize` rule takes at most #{RULE_ARGUMENTS} arguments " \
+              '(target, source_params, value)'
+      end
+
+      @authorize_value = value
     end
 
     # Sub-mapper for `type :association` / `type :array`, with an optional context lambda evaluated in
@@ -156,6 +214,10 @@ module ModelMapper
       @mapper_value = other.mapper_value if other.mapper_value
       @with_value = other.with_value if other.with_value
       @of_value = other.of_value if other.of_value
+      @authorize_value = other.authorize_value if other.explicitly_set?(:authorize_value)
+      if other.explicitly_set?(:default_authorize_value)
+        @default_authorize_value = other.default_authorize_value
+      end
 
       self
     end
@@ -177,6 +239,8 @@ module ModelMapper
       copy.mapper_value = @mapper_value
       copy.with_value = @with_value
       copy.of_value = @of_value
+      copy.authorize_value = @authorize_value
+      copy.default_authorize_value = @default_authorize_value
       copy
     end
 
@@ -211,6 +275,18 @@ module ModelMapper
     # Whether this param's value is assigned to the target object (false ⇒ validation-only).
     def assign?
       @assign_value
+    end
+
+    # Whether a fallback value was declared (`default`), static or computed.
+    def default?
+      !@default_value.nil?
+    end
+
+    # Whether the value a `default` supplies is subject to this field's `authorize` rule (the
+    # default). `default …, authorize: false` exempts it: the mapper, not the caller, is writing.
+    # Undeclared is held as nil so `explicitly_set?` can tell "said nothing" from "said true".
+    def authorize_default?
+      @default_authorize_value.nil? || @default_authorize_value
     end
 
     # Check if this param expects multiple values
@@ -267,19 +343,38 @@ module ModelMapper
     def condition_met?(target_object, source_params, service_instance)
       return true if @condition_value.nil?
 
-      case @condition_value
-      when Proc
-        case @condition_value.arity
-        when 0
-          service_instance.instance_exec(&@condition_value)
-        when 1
-          service_instance.instance_exec(target_object, &@condition_value)
-        else
-          service_instance.instance_exec(target_object, source_params, &@condition_value)
-        end
-      else
-        @condition_value
-      end
+      call_rule(@condition_value, service_instance, [target_object, source_params])
+    end
+
+    # Whether an authorization rule was declared at all. Held as nil when undeclared rather than
+    # `true` so `explicitly_set?` can tell "said nothing" from "said true" — without which a child
+    # mapper could never redeclare the option — and so the mapping path can skip the whole check
+    # (and the payload lookup it needs) for the mappers that do not use it.
+    def authorize?
+      !@authorize_value.nil?
+    end
+
+    # Weigh the `authorize` rule. Same shape as {#condition_met?} — a Proc `instance_exec`ed on the
+    # mapper instance (so `user`, the aliased record and the policies are in scope), or a plain
+    # boolean — with one extra argument available: the RAW payload value, for a rule that depends on
+    # what is being written and not only on which field.
+    # @return [Boolean] true when no rule is declared or the rule accepts the write
+    def authorized?(target_object, source_params, service_instance, value = nil)
+      return true if @authorize_value.nil?
+
+      call_rule(@authorize_value, service_instance, [target_object, source_params, value])
+    end
+
+    private
+
+    # Run a user-supplied rule (`map_if`, `authorize`): a plain value answers for itself, a Proc is
+    # `instance_exec`ed on the mapper instance — so the record alias, the keyword context and the
+    # policies are in scope — with as many of `args` as its signature accepts.
+    def call_rule(rule, service_instance, args)
+      return rule unless rule.is_a?(Proc)
+
+      count = [self.class.acceptable_arity(rule), args.size].min
+      service_instance.instance_exec(*args.first(count), &rule)
     end
 
   end

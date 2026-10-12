@@ -54,6 +54,20 @@ module ModelMapper
 
   end
 
+  # Recorded when the payload carries a field the caller is not allowed to write (`authorize`). What
+  # is refused is the FIELD, whatever value it carries — the value is never even weighed — hence the
+  # name, against the `*ValueError` siblings. Subclassing InvalidValueError is plumbing: it lets the
+  # refusal travel through the existing machinery untouched (#validation_errors, #errored_fields,
+  # ValidationError#fields / #first_error) while staying distinguishable BY CLASS, which is how a
+  # host app maps it to its own status code.
+  class UnauthorizedFieldError < InvalidValueError
+
+    def initialize(field)
+      super(field, message_key: 'errors.unauthorized_field_error')
+    end
+
+  end
+
   class InvalidFormatError < RuntimeError
 
     attr_reader :field, :expected_format

@@ -218,8 +218,8 @@ end
 
 `from`, `id_field`, `allowing`, `with`, `required`, `assign`, `default`, `default_on_invalid`, `of`,
 `type`, `multiple`, `nullable` are block methods; `many:` and the cardinality belong to `association`
-(`nullable:` is also accepted as a keyword). `map_if`
-is a block method (see below).
+(`nullable:` is also accepted as a keyword). `map_if` and `authorize` are block methods (see below);
+`authorize:` is also accepted as a keyword.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -229,10 +229,11 @@ is a block method (see below).
 | `with` | class, lambda | `nil` | Sub-mapper (+ optional context lambda) for an `association` built/upserted via `accepts_nested_attributes_for` |
 | `many:` | Bool | `false` | `association` cardinality — `true` ⇒ 1‑N (kwarg on `association`) |
 | `map_if` | Proc | `nil` | Block method controlling whether the attribute/association is processed — replaces `condition` |
+| `authorize` | Proc / Bool | `nil` | May the caller **write** this field? A falsy result refuses it with an `UnauthorizedFieldError` |
 | `required` | Bool / Proc | `false` | Whether `nil`/blank raises an error |
 | `nullable` | Bool | undeclared | What an explicit `null` does: `true` clears, `false` refuses — see below |
 | `assign` | Bool | `true` | Include in `assign_attributes`; `false` = validate-only (was `save`, which now raises) |
-| `default` | value / Proc | `nil` | Fallback when the source value is `nil`/missing |
+| `default` | value / Proc | `nil` | Fallback when the source value is `nil`/missing; `authorize: false` exempts it from `authorize` |
 | `default_on_invalid` | Bool | `false` | Use `default` when validation fails instead of raising |
 | `type` | Symbol | `nil` | Scalar validation type (`:integer`, `:float`, `:date`, `:boolean`, `:enumerated`, `:custom`) or `:array` |
 | `of` | Symbol | `nil` | Element type for a `type :array` of **scalars** |
@@ -315,6 +316,76 @@ map_if ->(target, source_params) { source_params.key?(:status) }
 
 > **Deprecation:** `condition` is the former name and still works, but emits a deprecation warning.
 > Prefer `map_if`.
+
+### `authorize`
+
+Per-field authorization: *may this caller write this field?* Same shape as `map_if` — a lambda
+`instance_exec`ed on the mapper instance, so the record alias, the keyword context (`user`, …) and
+the policies are all in scope — or a plain boolean. It is also accepted as a keyword
+(`attribute :name, authorize: …`). Anything else (a Symbol, a String, a policy object) is refused at
+class load: a value the mapper cannot call would read as *always authorized* on a field declared
+guarded.
+
+```ruby
+association :car_becoming do
+  allowing -> { job.company.car_becomings }
+  authorize -> { JobPolicy.new(Context::Company.new(job.company, user), job).update_car_becoming? }
+end
+```
+
+The difference with `map_if` is what a falsy result does, and it is the whole point: `map_if` skips
+the field **in silence**, so the caller gets a success for a write that never happened — which is
+precisely what an authorization must never do. `authorize` instead records a
+`ModelMapper::UnauthorizedFieldError` on the field, alongside every other error of the same call.
+
+Three rules:
+
+- **Weighed only when a value would land on the record, and handed THAT value.** Either the payload
+  carries the field — an explicit `null` counts, a field left out of a partial update does not — or
+  a `default` supplies one. A `default` that resolves to nothing writes nothing, so nothing is
+  refused; a `default` that does supply a value is weighed, because it may itself read the payload
+  and a rule inert on the field it sits next to is worse than no rule at all. Use
+  `default …, authorize: false` when the value is the mapper's own doing (see below).
+- **Weighed before anything else.** A refused field is never validated: the rule reads the value,
+  nothing else does. A caller is not told what is wrong with a write it cannot make. A rule that
+  raises is collected like any other lambda error, not thrown out of `map_to_model`.
+- **It also guards a validation-only field** (`assign false`). Nothing is written there by
+  definition — what is refused is the right to *submit* the field, which is why the message says
+  "cannot be set by this caller" rather than "cannot be modified".
+- **It applies to associations too**, in reference mode and through a sub-mapper alike. A refused
+  association builds nothing and runs no sub-mapper.
+
+> The refusal is keyed on the field itself — `"category"`, `"vehicle"` — while every *other* error
+> an association can produce is keyed on its identifier (`"category.id"`). This is deliberate: what
+> is refused is the field, not the id, which the mapper has not even looked at yet. A caller that
+> dispatches on the error key has to expect both.
+
+```ruby
+# Rules may also depend on WHAT is being written: the widest signature receives the value.
+authorize ->(target, source_params, value) { value.nil? || policy.may_set?(value) }
+```
+
+A rule is called with as many of `(target, source_params, value)` as its signature accepts. One
+asking for more is refused at class load, as is `authorize` declared twice for the same param (as a
+keyword *and* in the block — the keyword wins, so the block rule would vanish silently).
+
+### Exempting a `default` from the rule
+
+A `default` that supplies a value is a write, so it is weighed. When that value is the mapper's own
+doing rather than the caller's, exempt it:
+
+```ruby
+attribute :status do
+  default 'active', authorize: false   # always applied, even to a caller refused on this field
+  authorize -> { admin? }              # governs what the caller sends
+end
+```
+
+Without the exemption, a caller who may not set `status` is refused on it even though they never
+sent it — which blocks their whole update.
+
+A child mapper redeclares `authorize` like any other option; it can tighten or relax what its parent
+declared, but it cannot remove the option.
 
 ## Validation Types
 
@@ -635,6 +706,7 @@ Attributes that validated successfully still have their instance variables set, 
 RuntimeError
   |-- ModelMapper::InvalidValueError        # value not in allowed set
   |     |-- ModelMapper::InvalidNilValueError  # required value is nil/blank, or a null on `nullable false`
+  |     |-- ModelMapper::UnauthorizedFieldError # caller may not write this field (`authorize`)
   |-- ModelMapper::InvalidFormatError       # wrong format (float, integer, date)
   |-- ModelMapper::RecordError              # wraps the target's own (ActiveRecord) error(s) for an attribute
   |-- ModelMapper::ValidationError          # wraps all errors (mapper + record) from a single call

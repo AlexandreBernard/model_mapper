@@ -11,5 +11,6 @@ fr:
       reference_id_not_scalar: "l'identifiant doit être une valeur unique."
       cannot_replace_association: "l'enregistrement déjà associé ne peut pas être remplacé ici ; mettez-le à jour par son propre id ou remplacez-le côté appelant."
     invalid_nil_value_error: "Le champ %{field} ne peut pas être nul ou blanc."
+    unauthorized_field_error: "Le champ %{field} ne peut pas être renseigné par cet appelant."
     invalid_format_error: "Le format du champ %{field} est invalide."
     invalid_format_error_detailed: "Le format du champ %{field} est invalide : format attendu %{expected_format}."

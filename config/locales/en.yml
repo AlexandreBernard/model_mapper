@@ -11,5 +11,6 @@ en:
       reference_id_not_scalar: "the identifier must be a single value."
       cannot_replace_association: "the record already associated cannot be replaced here; update it by its own id or replace it in the caller."
     invalid_nil_value_error: "Field %{field} cannot be null or blank."
+    unauthorized_field_error: "Field %{field} cannot be set by this caller."
     invalid_format_error: "Invalid format for field %{field}."
     invalid_format_error_detailed: "Invalid format for field %{field}: expected format %{expected_format}."
