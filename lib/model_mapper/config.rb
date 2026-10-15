@@ -121,8 +121,8 @@ module ModelMapper
     private
 
     # Apply the keyword options accepted by `attribute`/`association` (`many:`, `nullable:`,
-    # `immediate_write:`). The
-    # processing condition is set with the `map_if` block method, not an option.
+    # `immediate_write:`). The processing condition is set with the `map_if` block method, not an
+    # option.
     def apply_options(param_config, options)
       param_config.many(options[:many]) if options.key?(:many)
       param_config.nullable(options[:nullable]) if options.key?(:nullable)

@@ -334,7 +334,8 @@ class TestExplicitNull < Minitest::Test
     widget = Widget.create!
     part = Part.create!(name: 'p', widget:)
 
-    result = klass.map_to_model(widget, { parts: nil })
+    result = nil
+    assert_output(nil, '') { result = klass.map_to_model(widget, { parts: nil }) }
     assert result.valid?
     assert_equal [], widget.parts.to_a
     assert_nil part.reload.widget_id

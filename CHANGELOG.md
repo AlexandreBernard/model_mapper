@@ -14,11 +14,12 @@ sub-mapper, raises `ConfigurationError`. See issue #6.
 `immediate_write` on a reference `association` (block method or `immediate_write:` keyword) says what
 happens when assigning it makes ActiveRecord write to the database during the map — a `has_one`,
 `has_many` or HABTM of a persisted record, given a value that differs from the current one, including
-a clear by `nullable true`. That write happens before validity is known and stays when the mapping
-fails (old children nullified, or deleted under `dependent: :destroy`). `immediate_write true` accepts
-it; `immediate_write false` refuses it with an `InvalidValueError` on the param's path and assigns
-nothing. A new record, a `belongs_to`, an unchanged value, an absent key and a skipped null are never
-affected. A value other than `true`/`false`, or `immediate_write` on anything but a reference
+a clear by `nullable true` or a `default`. That write happens before validity is known and stays when
+the mapping fails (old children nullified, or deleted under a deleting `dependent`; join rows deleted).
+`immediate_write true` accepts it; `immediate_write false` refuses it with an `InvalidValueError` on
+the param's path and assigns nothing. A new record, a `belongs_to`, an unchanged value (compared as
+ActiveRecord does: same records in any order), an absent key without `default` and a skipped null are
+never affected. A value other than `true`/`false`, or `immediate_write` on anything but a reference
 `association`, raises `ConfigurationError`. See issue #13.
 
 ### Changed

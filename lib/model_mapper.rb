@@ -83,7 +83,7 @@ module ModelMapper
 
     warn "[ModelMapper] #{mapper_label(mapper_class, param_name, keys)} changed an association of a persisted " \
          'record, which ActiveRecord writes to the database immediately, during the map: it stays written even if ' \
-         'the mapping then fails, and old children are deleted under `dependent: :destroy`. A future release will ' \
+         'the mapping then fails, and old children are deleted under a deleting `dependent`. A future release will ' \
          'refuse it instead. Declare `immediate_write false` to refuse it now, or `immediate_write true` to keep ' \
          'writing.'
   end
@@ -389,9 +389,10 @@ module ModelMapper
     ModelMapper.warn_immediate_write_once(self.class, param_config.name, param_config.keys)
   end
 
-  # Whether assigning `value` to this reference makes ActiveRecord write to the database now.
-  # `load_target` only reads. A collection is compared as a set of ids: ActiveRecord's replace diffs the
-  # records, so another order or a repeated id writes nothing.
+  # Whether assigning `value` to this reference makes ActiveRecord write to the database now. The
+  # comparison follows ActiveRecord's own replace: records are equal by class and id (`eql?`), so
+  # another order or a repeated id writes nothing, and an unsaved record in the current target is never
+  # written by the replace.
   def immediate_write?(target, param_config, value)
     return false unless param_config.reference?
     return false unless target.respond_to?(:persisted?) && target.persisted?
@@ -400,13 +401,24 @@ module ModelMapper
     reflection = target.class.reflect_on_association(param_config.name)
     return false if reflection.nil? || reflection.macro == :belongs_to
 
-    current = target.association(reflection.name).load_target
+    current = current_association_records(target.association(reflection.name), reflection)
     if reflection.collection?
-      Array(value).to_set(&:id) != current.to_set(&:id)
+      record_keys(Array(value)) != record_keys(current.reject(&:new_record?))
     else
       current != value
     end
   end
+
+  # The records currently associated, read without loading the association onto the target: the
+  # in-memory target when it is loaded, else a query on the association's scope, which a
+  # `strict_loading` owner allows (only lazily loading the association raises).
+  def current_association_records(association, reflection)
+    return association.target if association.loaded?
+
+    reflection.collection? ? association.scope.to_a : association.scope.first
+  end
+
+  def record_keys(records) = records.to_set { |record| [record.class, record.id] }
 
   # Run the target's own ActiveModel/ActiveRecord validations (without saving) and merge them into
   # the combined error hash (one entry per attribute), skipping any attribute already reported by a

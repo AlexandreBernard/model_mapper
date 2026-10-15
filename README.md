@@ -162,8 +162,9 @@ end
 - **A reference that ActiveRecord writes at once — `immediate_write`.** A reference is assigned through
   the association writer (`parts=`, `manual=`). On a **persisted** record, for a `has_one`, `has_many`
   (`:through` included) or `has_and_belongs_to_many`, ActiveRecord applies that change to the database
-  **immediately**, during the map: new children get their foreign key, old ones are nullified, or
-  **deleted** under `dependent: :destroy` — and it stays so even if the mapping then fails validation.
+  **immediately**, during the map: new children get their foreign key (or join row), old ones are
+  nullified, or **deleted** under `dependent: :destroy`/`:delete_all`/`:delete` (join rows are deleted)
+  — and it stays so even if the mapping then fails validation.
   `immediate_write` decides what happens then:
 
   | | the assignment writes now | it writes nothing |
@@ -173,8 +174,10 @@ end
   | `immediate_write false` | **refused**: `InvalidValueError` on the param's path (`parts`, `widget.parts`), nothing assigned, nothing written | assigned |
 
   The assignment writes nothing on a new (unsaved) record, for a `belongs_to`, and when the value equals
-  the current one (same child; same set of ids, in any order). A key that is absent, or a null that is
-  skipped, assigns nothing and is never refused. A future release refuses by default; see
+  the current one, compared as ActiveRecord does (same child; same records, in any order — an unsaved
+  child already in the association does not count). A key that is absent, or a null that is skipped,
+  assigns nothing and is never refused — unless a `default` fills it: a default is assigned like a sent
+  value, and is refused like one. A future release refuses by default; see
   [Deprecations](#a-reference-written-during-the-map). Replace such children in the caller, after the
   map succeeded, when the write must wait for validation.
 - **Error reporting differs by mode for 1‑N** (worth knowing): a 1‑N **reference** fails fast — the
@@ -713,7 +716,7 @@ such assignment emits, once per mapper class and param:
 ```
 [ModelMapper] WidgetMapper: `parts` changed an association of a persisted record, which ActiveRecord
 writes to the database immediately, during the map: it stays written even if the mapping then fails,
-and old children are deleted under `dependent: :destroy`. A future release will refuse it instead.
+and old children are deleted under a deleting `dependent`. A future release will refuse it instead.
 Declare `immediate_write false` to refuse it now, or `immediate_write true` to keep writing.
 ```
 
