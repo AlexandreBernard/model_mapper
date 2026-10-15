@@ -583,6 +583,10 @@ module ModelMapper
   FLOAT_FORMAT = /\A[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\z/
 
   def valid_float_value?(value, param_config, _source_params, _target_object)
+    # A real, finite Numeric needs no format check: its `to_s` need not match FLOAT_FORMAT (Rational
+    # renders as "1/2"). Complex and non-finite values fall through and fail the format check.
+    return value.to_f if value.is_a?(Numeric) && value.real? && value.finite?
+
     unless value.to_s.strip.match?(FLOAT_FORMAT)
       raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'), expected_format: :float)
     end
@@ -591,7 +595,7 @@ module ModelMapper
   end
 
   def valid_integer_value?(value, param_config, _source_params, _target_object)
-    unless value.to_s.strip.match?(/^\d+$/)
+    unless value.to_s.strip.match?(/\A\d+\z/)
       raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'),
                                                 expected_format: :integer)
     end

@@ -1034,9 +1034,34 @@ class TestModelMapper < Minitest::Test
     assert_equal expected, actual
   end
 
-  # The format is anchored: `to_f` would silently read these as 12.0, 1.0, 1.2, 0.0, 12.0 and 0.0.
+  # The format is anchored: `to_f` would silently read these as 12.0, 1.0, 1.2, 0.0, 12.0, 0.0, 1000.0,
+  # 1.0, 0.0 and 1500.0.
   def test_float_rejects_trailing_or_leading_garbage
-    ['12abc', '1,5', '1.2.3', 'abc12', "12\nabc", '- 1'].each do |input|
+    ['12abc', '1,5', '1.2.3', 'abc12', "12\nabc", '- 1', '1_000', '1e', '0x1A', '1.5e3.2'].each do |input|
+      service = FloatService.new(Widget.new, { price: input })
+      error   = assert_raises(ModelMapper::ValidationError, input.inspect) { service.call }
+      assert_kind_of ModelMapper::InvalidFormatError, error.first_error, input.inspect
+    end
+  end
+
+  # A real, finite Numeric skips the string format: a Rational renders as "1/2", which FLOAT_FORMAT rejects.
+  def test_float_accepts_real_finite_numerics
+    inputs   = [Rational(1, 2), Rational(4, 1), BigDecimal('1.5'), BigDecimal('-2')]
+    expected = [0.5, 4.0, 1.5, -2.0]
+
+    actual = inputs.map do |input|
+      widget = Widget.new
+      FloatService.new(widget, { price: input }).call
+      widget.price
+    end
+
+    assert_equal expected, actual
+  end
+
+  # Complex (even with a zero imaginary part) and non-finite values are not floats a model can store.
+  def test_float_rejects_complex_and_non_finite_numerics
+    [Complex(1, 0), Complex(1, 2), Float::INFINITY, -Float::INFINITY, Float::NAN,
+     BigDecimal('Infinity'), BigDecimal('NaN')].each do |input|
       service = FloatService.new(Widget.new, { price: input })
       error   = assert_raises(ModelMapper::ValidationError, input.inspect) { service.call }
       assert_kind_of ModelMapper::InvalidFormatError, error.first_error, input.inspect
@@ -1073,13 +1098,36 @@ class TestModelMapper < Minitest::Test
     assert_kind_of ModelMapper::InvalidFormatError, error.first_error
   end
 
-  # `^\d+$` matches the first line alone; the invalid bytes on the next one must still be refused.
+  # A valid first line does not make an invalidly encoded string a number.
   def test_integer_rejects_invalid_utf8_on_a_later_line
     widget = Widget.new
     service = IntegerService.new(widget, { quantity: "5\n\xFF".dup.force_encoding('UTF-8') })
     error = assert_raises(ModelMapper::ValidationError) { service.call }
     assert_kind_of ModelMapper::InvalidFormatError, error.first_error
     assert_nil widget.quantity
+  end
+
+  # Anchoring the format must not tighten it: surrounding whitespace, including a newline, is stripped.
+  def test_integer_accepts_digits_with_surrounding_whitespace
+    inputs   = [42, 0, '12', ' 12 ', "12\n", "\n12", '007']
+    expected = [42, 0, 12, 12, 12, 12, 7]
+
+    actual = inputs.map do |input|
+      widget = Widget.new
+      IntegerService.new(widget, { quantity: input }).call
+      widget.quantity
+    end
+
+    assert_equal expected, actual
+  end
+
+  # The format is anchored to the string, not to a line: `to_i` would silently read these as 12 and 0.
+  def test_integer_rejects_garbage_on_another_line
+    ["12\nabc", "abc\n12"].each do |input|
+      service = IntegerService.new(Widget.new, { quantity: input })
+      error   = assert_raises(ModelMapper::ValidationError, input.inspect) { service.call }
+      assert_kind_of ModelMapper::InvalidFormatError, error.first_error, input.inspect
+    end
   end
 
   # Boolean type

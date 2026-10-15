@@ -5,10 +5,20 @@
 ### Changed
 
 `type :float` checked its format with an unanchored regex, so any string holding a digit passed, and
-`to_f` then silently kept its leading number: `"1,5"` became `1.0`, `"12abc"` `12.0`, `"abc12"` and
-`"- 1"` `0.0`. The format is now anchored and such strings are an `InvalidFormatError`. Everything
-`to_f` reads in full is still accepted: sign, leading dot (`".5"`), exponent (`"1e3"`), and Float or
-Integer params (`-0.25`, `1e20`, `3`).
+`to_f` then silently kept its leading number: `"1,5"` became `1.0`, `"12abc"` `12.0`, `"1.2.3"` `1.2`,
+`"12\nabc"` `12.0`, `"1_000"` `1000.0`, `"1e"` `1.0`, `"1.5e3.2"` `1500.0`, and `"abc12"`, `"- 1"`
+and `"0x1A"` `0.0`. The format is now anchored and such strings are an `InvalidFormatError`.
+Everything `to_f` reads in full is still accepted: sign, leading dot (`".5"`), exponent (`"1e3"`).
+A real, finite `Numeric` param (Integer, Float, Rational, BigDecimal: `3`, `-0.25`, `1e20`,
+`Rational(1, 2)`) skips the string format and is converted with `to_f`. A `Complex` param is now an
+`InvalidFormatError`: `Complex(1, 0)` was `1.0`, and `Complex(1, 2)` raised `RangeError` out of the
+mapper. Infinity and NaN stay rejected.
+
+`type :integer` anchored its format to a line (`/^\d+$/`), so a string with one line of digits
+passed and `to_i` kept its leading number: `"12\nabc"` became `12`, `"abc\n12"` `0`. The format is
+now anchored to the whole string and both are an `InvalidFormatError`. The accepted set is otherwise
+unchanged: digits with surrounding whitespace (`" 12 "`, `"12\n"`) and non-negative Integer params.
+Signed values (`"-5"`, `"+5"`, `-5`) and Float params were rejected before and still are.
 
 ### Fixed
 
