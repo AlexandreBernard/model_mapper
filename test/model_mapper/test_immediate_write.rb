@@ -153,12 +153,21 @@ class TestImmediateWrite < Minitest::Test
     assert_equal ['widget.parts'], klass.map_to_model(Widget.create!, { widget: { parts: [{ id: part.id }] } }).errors.keys
   end
 
-  def test_undeclared_accepts_an_absent_key_and_an_ignored_null
+  def test_undeclared_accepts_an_absent_key
     widget = Widget.create!
     part = Part.create!(name: 'p', widget:)
 
     assert parts_mapper.map_to_model(widget, {}).valid?
-    assert_output(nil, /explicit null/) { assert parts_mapper.map_to_model(widget, { parts: nil }).valid? }
+    assert_equal widget.id, part.reload.widget_id
+  end
+
+  # Clearing a reference is a write like any other — the null detaches the rows at once — so it is
+  # refused just the same, and nothing reaches the database.
+  def test_undeclared_refuses_a_clearing_null
+    widget = Widget.create!
+    part = Part.create!(name: 'p', widget:)
+
+    refute parts_mapper.map_to_model(widget, { parts: nil }).valid?
     assert_equal widget.id, part.reload.widget_id
   end
 
@@ -424,7 +433,7 @@ class TestImmediateWrite < Minitest::Test
     assert_nil result.parts
   end
 
-  def test_false_accepts_an_absent_key_and_an_ignored_null
+  def test_false_accepts_an_absent_key
     widget = Widget.create!
     part = Part.create!(name: 'p', widget:)
     manual = Manual.create!(title: 'm', widget:)
@@ -432,8 +441,17 @@ class TestImmediateWrite < Minitest::Test
     [parts_mapper(false), manual_mapper(false)].each do |klass|
       assert klass.map_to_model(widget, {}).valid?
     end
-    assert_output(nil, /explicit null/) { assert parts_mapper(false).map_to_model(widget, { parts: nil }).valid? }
-    assert_output(nil, /explicit null/) { assert manual_mapper(false).map_to_model(widget, { manual: nil }).valid? }
+    assert_equal widget.id, part.reload.widget_id
+    assert_equal widget.id, manual.reload.widget_id
+  end
+
+  def test_false_refuses_a_clearing_null
+    widget = Widget.create!
+    part = Part.create!(name: 'p', widget:)
+    manual = Manual.create!(title: 'm', widget:)
+
+    refute parts_mapper(false).map_to_model(widget, { parts: nil }).valid?
+    refute manual_mapper(false).map_to_model(widget, { manual: nil }).valid?
     assert_equal widget.id, part.reload.widget_id
     assert_equal widget.id, manual.reload.widget_id
   end

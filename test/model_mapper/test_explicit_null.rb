@@ -38,73 +38,20 @@ class TestExplicitNull < Minitest::Test
     end
   end
 
-  def warning_for(param) = /explicit null.*`#{param}`|`#{param}`.*explicit null/m
+  # --- an explicit null clears, whatever the param declares ---
 
-  # --- undeclared: skipped + warned once per mapper class and param ---
-
-  def test_undeclared_null_keeps_the_value_and_warns
+  def test_undeclared_null_clears_the_value
     klass = mapper { attribute :name }
     widget = Widget.create!(name: 'kept')
 
-    assert_output(nil, warning_for(:name)) { klass.map_to_model!(widget, { name: nil }) }
-    assert_equal 'kept', widget.name
+    klass.map_to_model!(widget, { name: nil })
+
+    assert_nil widget.name
   end
 
-  def test_warning_names_an_anonymous_mapper_by_inspect
-    klass = mapper { attribute :name }
-
-    assert_output(nil, /#<Class:0x\h+>: `name`/) { klass.map_to_model(Widget.new, { name: nil }) }
-  end
-
-  def test_warning_is_emitted_once_per_mapper_and_param_across_instances
-    klass = mapper do
-      attribute :name
-      attribute :code
-    end
-
-    assert_output(nil, warning_for(:name)) { klass.map_to_model(Widget.new, { name: nil }) }
-    assert_output(nil, '') { klass.map_to_model(Widget.new, { name: nil }) }
-    assert_output(nil, warning_for(:code)) { klass.map_to_model(Widget.new, { code: nil }) }
-  end
-
-  def test_two_mapper_classes_with_the_same_param_each_warn
-    first = mapper { attribute :name }
-    second = mapper { attribute :name }
-
-    _, err = capture_io do
-      first.map_to_model(Widget.new, { name: nil })
-      second.map_to_model(Widget.new, { name: nil })
-    end
-    assert_equal 2, err.scan(/`name`/).size
-  end
-
-  def test_reset_clears_the_warned_set
-    klass = mapper { attribute :name }
-    capture_io { klass.map_to_model(Widget.new, { name: nil }) }
-    ModelMapper.reset_explicit_null_warnings!
-
-    assert_output(nil, warning_for(:name)) { klass.map_to_model(Widget.new, { name: nil }) }
-  end
-
-  def test_warning_says_the_null_is_treated_like_an_absent_key
-    klass = mapper { attribute :name }
-
-    assert_output(nil, /treated like an absent key/) { klass.map_to_model(Widget.new, { name: nil }) }
-  end
-
-  def test_warning_names_the_payload_path_of_a_nested_param
-    klass = mapper do
-      attribute :status do
-        from :info, :status
-      end
-    end
-
-    assert_output(nil, /`status` \(sent as `info\.status`\)/) do
-      klass.map_to_model(Widget.new, { info: { status: nil } })
-    end
-  end
-
-  def test_undeclared_null_with_default_applies_the_default_and_warns
+  # A `default` answers an ABSENT key. A null is an instruction, and it wins: erasing a value and
+  # falling back to a default are opposite intentions (RFC 7396).
+  def test_a_null_clears_a_param_that_declares_a_default
     klass = mapper do
       attribute :status do
         default 'dflt'
@@ -112,11 +59,25 @@ class TestExplicitNull < Minitest::Test
     end
     widget = Widget.new(status: 'active')
 
-    assert_output(nil, warning_for(:status)) { klass.map_to_model(widget, { status: nil }) }
+    klass.map_to_model!(widget, { status: nil })
+
+    assert_nil widget.status
+  end
+
+  def test_an_absent_key_still_takes_the_default
+    klass = mapper do
+      attribute :status do
+        default 'dflt'
+      end
+    end
+    widget = Widget.new(status: 'active')
+
+    klass.map_to_model!(widget, {})
+
     assert_equal 'dflt', widget.status
   end
 
-  def test_undeclared_null_on_a_lambda_required_answering_false_warns
+  def test_null_clears_when_a_lambda_required_answers_false
     klass = mapper do
       attribute :code
       attribute :name do
@@ -125,13 +86,14 @@ class TestExplicitNull < Minitest::Test
     end
     widget = Widget.new(name: 'kept')
 
-    assert_output(nil, warning_for(:name)) { klass.map_to_model(widget, { code: 'X', name: nil }) }
-    assert_equal 'kept', widget.name
+    klass.map_to_model!(widget, { code: 'X', name: nil })
+
+    assert_nil widget.name
   end
 
-  # --- not an explicit null: no warning, no change ---
+  # --- not a clearing request: nothing changes ---
 
-  def test_absent_blank_and_empty_values_do_not_warn
+  def test_absent_and_blank_values_do_not_clear
     klass = mapper do
       attribute :name
       attribute :numbers do
@@ -143,9 +105,51 @@ class TestExplicitNull < Minitest::Test
       end
     end
 
-    [{}, { name: '' }, { numbers: [] }, { category: {} }].each do |payload|
-      assert_output(nil, '') { klass.map_to_model(Widget.new, payload) }
+    [{}, { name: '' }, { category: {} }].each do |payload|
+      widget = Widget.new(name: 'kept', category: Category.create!(name: 'c'))
+      klass.map_to_model!(widget, payload)
+
+      assert_equal 'kept', widget.name
+      refute_nil widget.category
     end
+  end
+
+  # An empty list is what a client sends once it has removed every element, so on a multi-valued
+  # param it means the same thing as a null. On a scalar it says nothing and still changes nothing.
+  def test_an_empty_list_clears_a_multi_valued_param
+    klass = mapper do
+      attribute :numbers do
+        type :array
+        of :integer
+      end
+    end
+    widget = Widget.new(numbers: [1, 2])
+
+    klass.map_to_model!(widget, { numbers: [] })
+
+    assert_empty widget.numbers
+  end
+
+  def test_an_empty_list_on_a_scalar_param_does_not_clear
+    klass = mapper { attribute :name }
+    widget = Widget.new(name: 'kept')
+
+    klass.map_to_model!(widget, { name: [] })
+
+    assert_equal 'kept', widget.name
+  end
+
+  def test_nullable_false_refuses_an_empty_list_on_a_multi_valued_param
+    klass = mapper do
+      attribute :numbers, nullable: false do
+        type :array
+        of :integer
+      end
+    end
+
+    error = assert_raises(ModelMapper::ValidationError) { klass.map_to_model!(Widget.new, { numbers: [] }) }
+
+    assert_equal ['numbers'], error.fields
   end
 
   def test_false_is_not_an_explicit_null
@@ -176,8 +180,11 @@ class TestExplicitNull < Minitest::Test
     refusing = mapper { attribute :name, nullable: false }
 
     widget = Widget.new(name: 'kept')
-    assert_output(nil, warning_for(:name)) { undeclared.map_to_model(widget, { 'name' => nil }) }
-    assert_equal 'kept', widget.name
+    undeclared.map_to_model!(widget, { 'name' => nil })
+
+    assert_nil widget.name
+
+    widget.name = 'kept'
 
     nullable.map_to_model!(widget, { 'name' => nil })
     assert_nil widget.name

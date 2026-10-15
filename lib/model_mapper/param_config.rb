@@ -72,12 +72,12 @@ module ModelMapper
       @multiple_value = value
     end
 
-    # What an explicit null in the payload (the key present, its value nil) does to this param. The key
-    # being ABSENT is never affected. `true` clears the value (nil, or [] for a collection); `false`
-    # refuses the null with an InvalidNilValueError, for a value the record cannot hold while the key
-    # stays optional. Undeclared (nil) keeps skipping the null — with a deprecation warning, since a
-    # future release clears it. Undeclared is held as nil rather than a boolean so `explicitly_set?`
-    # tells "said nothing" from "said true/false", letting a child override its parent either way.
+    # What a clearing request does to this param — an explicit null, or an empty list on a
+    # multi-valued param. The key being ABSENT is never affected. `true` (the default) clears the
+    # value (nil, or [] for a collection); `false` refuses the request with an InvalidNilValueError,
+    # for a value the record cannot hold while the key itself stays optional. Undeclared is held as
+    # nil rather than `true` so `explicitly_set?` tells "said nothing" from "said true/false",
+    # letting a child override its parent either way.
     def nullable(value)
       @nullable_value = value
     end

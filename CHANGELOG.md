@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Changed / Breaking — a clearing request now clears
+
+An explicit `null` on a param that declares no `nullable` used to be treated like an absent key —
+skipped, or replaced by its `default` — while warning that a future release would clear the value.
+That release is this one: `nullable` now defaults to `true`, the warning is gone, and `{ name: null }`
+erases the value where a payload without `name` still leaves it alone (RFC 7396). `nullable false`
+is unchanged and refuses the null.
+
+An **empty list** on a multi-valued param (`many: true`, `type :array`) is a clearing request too.
+It is what a client sends once it has removed every element, and it used to do nothing at all while
+`null` emptied the param — two spellings of the same intention with opposite outcomes. On a scalar
+param `[]` still says nothing and changes nothing.
+
+A `default` now answers an absent key only. Erasing a value and falling back to a default are
+opposite intentions, so the null wins.
+
+**Upgrading:** an app that already declared `nullable` on a param sees no change — that is what the
+previous release's warning asked for. Anywhere else, a param that relied on "a null means leave it
+alone" needs `nullable false`. Clearing a `has_one`/`has_many` reference stays governed by
+`immediate_write`: it is refused unless the reference declares `immediate_write true`, so a null
+cannot detach rows before the mapping has been validated.
+
 ### Changed / Breaking — a reference written during the map is refused by default
 
 A reference `association` on a persisted record used to be assigned even when ActiveRecord writes

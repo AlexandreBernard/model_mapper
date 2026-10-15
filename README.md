@@ -250,7 +250,7 @@ is a block method (see below).
 | `many:` | Bool | `false` | `association` cardinality — `true` ⇒ 1‑N (kwarg on `association`) |
 | `map_if` | Proc | `nil` | Block method controlling whether the attribute/association is processed — replaces `condition` |
 | `required` | Bool / Proc | `false` | Whether `nil`/blank raises an error |
-| `nullable` | Bool | undeclared | What an explicit `null` does: `true` clears, `false` refuses — see below |
+| `nullable` | Bool | `true` | Whether a clearing request (`null`, or `[]` on a multi-valued param) clears the value or is refused |
 | `immediate_write` | Bool | undeclared | Reference `association` only: whether a change ActiveRecord writes to the DB during the map is accepted (`true`) or refused (`false`, or undeclared) — see below |
 | `assign` | Bool | `true` | Include in `assign_attributes`; `false` = validate-only (was `save`, which now raises) |
 | `default` | value / Proc | `nil` | Fallback when the source value is `nil`/missing |
@@ -271,32 +271,36 @@ required ->(params) { params[:code].nil? }
 required ->(params, target) { target.new_record? }
 ```
 
-### `nullable` — clearing a value with an explicit `null`
+### `nullable` — clearing a value
 
-An **absent** key never touches the current value. A key sent with an **explicit `null`** (present,
-raw value `nil`) is governed by `nullable`:
+An **absent** key never touches the current value. A key the payload actually sends with a **clearing
+request** erases it: an explicit `null`, or an **empty list** on a multi-valued param (`many: true`,
+`type :array`) — which is what a client sends once it has removed every element. `default`,
+`allowing` and type validation do not apply to a clear.
 
-| `nullable` | Explicit `null` |
+| `nullable` | A clearing request |
 |---|---|
-| undeclared | treated like an absent key (skipped, or replaced by its `default`) — **deprecated**, emits a warning |
-| `true` | clears the value: `nil`, or `[]` for a collection (`many: true`, `type :array`); `default`, `allowing` and type validation do not apply |
+| `true` (default) | clears the value: `nil`, or `[]` for a multi-valued param |
 | `false` | refused with an `InvalidNilValueError` on the param's path; the key itself stays optional |
 
 ```ruby
-attribute :nickname, nullable: true          # { nickname: null } clears it
+{ nickname: 'Bob' }   # sets it
+{ status: 'active' }  # nickname untouched — the key is absent
+{ nickname: null }    # CLEARS it
+{ tag_ids: [] }       # clears a multi-valued param, like null
+```
+
+```ruby
 attribute :vin_mandatory, nullable: false    # NOT NULL column: a null is an error, absence is fine
-association :category do
-  allowing -> { Category.enabled }
-  nullable true                              # { category: null } unlinks the category
-end
 ```
 
 - `nullable` takes `true` or `false` (`nil` leaves it undeclared); anything else raises `ConfigurationError`.
 - `required` wins: a required param refuses a null whatever `nullable` says.
-- `""`, `[]`, `{}` are not explicit nulls and keep being skipped. On a nested `from :info, :status`,
-  `{ info: null }` or `{ info: {} }` is not a null for `status` either.
-- The key is read like any value, indifferently to symbol/string: `{ 'nickname' => null }` is a null
-  for `attribute :nickname`.
+- `""` and `{}` are not clearing requests and keep being skipped, and `[]` is one only on a
+  multi-valued param — on a scalar it says nothing. On a nested `from :info, :status`,
+  `{ info: null }` or `{ info: {} }` is not a clear for `status` either.
+- The key is read like any value, indifferently to symbol/string: `{ 'nickname' => null }` clears
+  `attribute :nickname`.
 - The null must sit on the **last** key of the `from` path. The deprecated `type :referential` reads
   `from :category, :id`, so `{ category: { id: null } }` is its null and `{ category: null }` is not;
   an `association :category` reads the section itself, so `{ category: null }` is.
@@ -686,24 +690,6 @@ removed in a later release. See `CHANGELOG.md`.
 
 `type :array` with a scalar `of` (`:string`, `:integer`, `:float`, `:date`, `:boolean`,
 `:enumerated`, `:custom`, `:any`) is **not** deprecated.
-
-### An explicit `null` being ignored
-
-A key sent with an explicit `null` on a param that declares no `nullable` is still skipped, like an
-absent key, but a future release will **clear** the value instead. Each such null emits, once per
-mapper class and param:
-
-```
-[ModelMapper] WidgetMapper: `nickname` received an explicit null, which is treated like an absent key
-(skipped, or replaced by its `default`); a future release will clear the value instead. Declare
-`nullable true` to clear it now, or `nullable false` to reject the null.
-```
-
-A nested param names the payload path too: `` `status` (sent as `info.status`) ``. A validation-only
-param (`assign false`) does not warn: it assigns nothing either way.
-
-Declare `nullable true` where the client means "clear it", `nullable false` where the record cannot
-hold a null. A client that sends `null` to mean "leave it alone" should stop sending the key.
 
 ## Tests
 
