@@ -161,4 +161,18 @@ class TestConfig < Minitest::Test
     assert_respond_to child.on_save_hook, :call
   end
 
+  # nullable option
+
+  def test_nullable_keyword_option_sets_both_values
+    @config.attribute(:name, nullable: true)
+    @config.attribute(:code, nullable: false)
+    assert_equal true, @config.params[:name].nullable_value
+    assert_equal false, @config.params[:code].nullable_value
+  end
+
+  def test_child_config_inherits_nullable
+    @config.attribute(:name, nullable: true)
+    assert_equal true, ModelMapper::Config.new(@config).params[:name].nullable_value
+  end
+
 end

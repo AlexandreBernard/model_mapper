@@ -107,7 +107,10 @@ module ModelMapper
     def validate!
       @from_source ||= :@params
       @to_target   ||= :@record
-      @params.each_value { |param_config| validate_array_param!(param_config) }
+      @params.each_value do |param_config|
+        validate_array_param!(param_config)
+        validate_nullable_param!(param_config)
+      end
       unless @deprecations_warned
         @params.each_value { |param_config| validate_association_param!(param_config) }
         @deprecations_warned = true
@@ -116,10 +119,11 @@ module ModelMapper
 
     private
 
-    # Apply the keyword options accepted by `attribute`/`association` (currently `many:`). The
+    # Apply the keyword options accepted by `attribute`/`association` (`many:`, `nullable:`). The
     # processing condition is set with the `map_if` block method, not an option.
     def apply_options(param_config, options)
       param_config.many(options[:many]) if options.key?(:many)
+      param_config.nullable(options[:nullable]) if options.key?(:nullable)
     end
 
     # Resolve the resolution mode of an `association` from what the block declared:
@@ -135,6 +139,18 @@ module ModelMapper
         raise ModelMapper::ConfigurationError,
               "association `#{param_config.name}` requires `allowing` (reference) and/or `with` (build)"
       end
+    end
+
+    # A param mapped by a sub-mapper (`association … with`, or the deprecated `type :association` /
+    # `type :array` + `with`) is never cleared by a null: that would mean destroying or detaching
+    # records, and mapping is write-free. `nullable` has nothing to govern there, so declaring it is
+    # refused rather than accepted and ignored.
+    def validate_nullable_param!(param_config)
+      return unless param_config.mapper? && param_config.explicitly_set?(:nullable_value)
+
+      raise ModelMapper::ConfigurationError,
+            "`nullable` does not apply to `#{param_config.name}`: a param mapped by a sub-mapper " \
+            'is never cleared by a null'
     end
 
     # `type :array` must declare exactly one element strategy: `mapper` (array of records) or `of`

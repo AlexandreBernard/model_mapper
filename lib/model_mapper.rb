@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'i18n'
+require 'set'
 
 require_relative 'model_mapper/errors'
 require_relative 'model_mapper/param_config'
@@ -59,6 +60,27 @@ module ModelMapper
 
   def self.root
     File.expand_path('..', __dir__)
+  end
+
+  EXPLICIT_NULL_WARNINGS = Set.new
+  EXPLICIT_NULL_WARNINGS_LOCK = Mutex.new
+  private_constant :EXPLICIT_NULL_WARNINGS, :EXPLICIT_NULL_WARNINGS_LOCK
+
+  # Deprecation: an explicit null on a param that does not declare `nullable` is still skipped, but a
+  # future release clears the value instead. Warned at most once per (mapper class, param) per process —
+  # the same endpoint receives the same null on every request. Keyed by the class object, so two
+  # anonymous mappers never share an entry.
+  def self.warn_explicit_null_once(mapper_class, param_name)
+    return unless EXPLICIT_NULL_WARNINGS_LOCK.synchronize { EXPLICIT_NULL_WARNINGS.add?([mapper_class, param_name]) }
+
+    warn "[ModelMapper] #{mapper_class.name || mapper_class.inspect}: `#{param_name}` received an explicit null, " \
+         'which is ignored; a future release will clear the value instead. Declare `nullable true` to clear it ' \
+         'now, or `nullable false` to reject the null.'
+  end
+
+  # Forget which explicit-null deprecations were already emitted (tests).
+  def self.reset_explicit_null_warnings!
+    EXPLICIT_NULL_WARNINGS_LOCK.synchronize { EXPLICIT_NULL_WARNINGS.clear }
   end
 
   def self.included(base)
@@ -240,7 +262,21 @@ module ModelMapper
 
       begin
         allow_nil = !param_config.required?(source_params, target_object)
-        value = validate_param(param_config, source_params, target_object, allow_nil)
+        # An explicit null (key present, raw value nil) on an optional param: `nullable` decides. A
+        # required param keeps refusing it in validate_param, whatever `nullable` says.
+        cleared = false
+        if allow_nil && explicit_null?(param_config, source_params)
+          case param_config.nullable_value
+          when true
+            cleared = true
+            value = param_config.collection? ? [] : nil
+          when false
+            raise ModelMapper::InvalidNilValueError.new(param_config.keys.join('.'))
+          else
+            ModelMapper.warn_explicit_null_once(self.class, param_name)
+          end
+        end
+        value = validate_param(param_config, source_params, target_object, allow_nil) unless cleared
       rescue ModelMapper::InvalidValueError, ModelMapper::InvalidFormatError => e
         validation_errors[e.field] = e
         errored_fields << param_name.to_s
@@ -268,8 +304,8 @@ module ModelMapper
         instance_variable_set(:"@#{param_name}", value)
       end
 
-      # Skip nil values when not required
-      next if value.nil? && allow_nil
+      # Skip nil values when not required — unless the payload asked to clear the value
+      next if value.nil? && allow_nil && !cleared
 
       # Only include in the assignment hash when this param is assignable
       next unless param_config.assign?
@@ -847,6 +883,16 @@ module ModelMapper
     else
       param_config.allowing_value
     end
+  end
+
+  # Whether the payload sends this param as an explicit null: the last key of its path is present in
+  # its parent with a nil value. The parent is read with the very keys `validate_param` digs with (no
+  # symbol/string fallback), so a key that cannot set a value cannot clear one either. A nil or empty
+  # parent section, and blank values ("", [], {}), are not explicit nulls.
+  def explicit_null?(param_config, source_params)
+    *path, last = param_config.keys
+    parent = path.empty? ? source_params : source_params.dig(*path)
+    parent.respond_to?(:key?) && parent.key?(last) && parent[last].nil?
   end
 
   def smart_presence(value)

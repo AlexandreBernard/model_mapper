@@ -218,4 +218,31 @@ class TestParamConfig < Minitest::Test
     assert_equal :enumerated, @config.type_value
   end
 
+  # #nullable
+
+  def test_nullable_is_undeclared_by_default
+    assert_nil @config.nullable_value
+  end
+
+  def test_dup_copies_nullable
+    @config.nullable false
+    assert_equal false, @config.dup.nullable_value
+  end
+
+  def test_merge_relaxes_and_tightens_nullable
+    @config.nullable false
+    relaxing = ModelMapper::ParamConfig.new(:street_id)
+    relaxing.nullable true
+    assert_equal true, @config.merge!(relaxing).nullable_value
+
+    tightening = ModelMapper::ParamConfig.new(:street_id)
+    tightening.nullable false
+    assert_equal false, @config.merge!(tightening).nullable_value
+  end
+
+  def test_merge_keeps_nullable_when_the_other_is_silent
+    @config.nullable false
+    assert_equal false, @config.merge!(ModelMapper::ParamConfig.new(:street_id)).nullable_value
+  end
+
 end

@@ -7,7 +7,8 @@ module ModelMapper
 
     attr_reader :name
     attr_accessor :at_keys, :type_value, :field_value, :allowing_value, :required_value, :multiple_value, :assign_value,
-                  :default_value, :default_on_invalid_value, :condition_value, :mapper_value, :with_value, :of_value
+                  :default_value, :default_on_invalid_value, :condition_value, :mapper_value, :with_value, :of_value,
+                  :nullable_value
 
     def initialize(name)
       @name = name
@@ -18,6 +19,7 @@ module ModelMapper
       @required_value = false
       @multiple_value = false
       @assign_value = true
+      @nullable_value = nil
       @default_value = nil
       @default_on_invalid = false
       @condition_value = nil
@@ -67,6 +69,16 @@ module ModelMapper
 
     def multiple(value)
       @multiple_value = value
+    end
+
+    # What an explicit null in the payload (the key present, its value nil) does to this param. The key
+    # being ABSENT is never affected. `true` clears the value (nil, or [] for a collection); `false`
+    # refuses the null with an InvalidNilValueError, for a value the record cannot hold while the key
+    # stays optional. Undeclared (nil) keeps skipping the null — with a deprecation warning, since a
+    # future release clears it. Undeclared is held as nil rather than a boolean so `explicitly_set?`
+    # tells "said nothing" from "said true/false", letting a child override its parent either way.
+    def nullable(value)
+      @nullable_value = value
     end
 
     # Cardinality of an `association`: `many: true` ⇒ 1-n (collection). Alias of `multiple`, named for
@@ -137,6 +149,7 @@ module ModelMapper
       @required_value = other.required_value if other.explicitly_set?(:required_value)
       @multiple_value = other.multiple_value if other.explicitly_set?(:multiple_value)
       @assign_value = other.assign_value if other.explicitly_set?(:assign_value)
+      @nullable_value = other.nullable_value if other.explicitly_set?(:nullable_value)
       @default_value = other.default_value if other.explicitly_set?(:default_value)
       @default_on_invalid_value = other.default_on_invalid_value if other.explicitly_set?(:default_on_invalid_value)
       @condition_value = other.condition_value if other.explicitly_set?(:condition_value)
@@ -157,6 +170,7 @@ module ModelMapper
       copy.required_value = @required_value
       copy.multiple_value = @multiple_value
       copy.assign_value = @assign_value
+      copy.nullable_value = @nullable_value
       copy.default_value = @default_value
       copy.default_on_invalid_value = @default_on_invalid_value
       copy.condition_value = @condition_value

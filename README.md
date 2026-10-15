@@ -213,7 +213,8 @@ end
 ## Attribute / association options
 
 `from`, `id_field`, `allowing`, `with`, `required`, `assign`, `default`, `default_on_invalid`, `of`,
-`type`, `multiple` are block methods; `many:` and the cardinality belong to `association`. `map_if`
+`type`, `multiple`, `nullable` are block methods; `many:` and the cardinality belong to `association`
+(`nullable:` is also accepted as a keyword). `map_if`
 is a block method (see below).
 
 | Option | Type | Default | Description |
@@ -225,6 +226,7 @@ is a block method (see below).
 | `many:` | Bool | `false` | `association` cardinality — `true` ⇒ 1‑N (kwarg on `association`) |
 | `map_if` | Proc | `nil` | Block method controlling whether the attribute/association is processed — replaces `condition` |
 | `required` | Bool / Proc | `false` | Whether `nil`/blank raises an error |
+| `nullable` | Bool | undeclared | What an explicit `null` does: `true` clears, `false` refuses — see below |
 | `assign` | Bool | `true` | Include in `assign_attributes`; `false` = validate-only (was `save`, which now raises) |
 | `default` | value / Proc | `nil` | Fallback when the source value is `nil`/missing |
 | `default_on_invalid` | Bool | `false` | Use `default` when validation fails instead of raising |
@@ -243,6 +245,37 @@ required true
 required ->(params) { params[:code].nil? }
 required ->(params, target) { target.new_record? }
 ```
+
+### `nullable` — clearing a value with an explicit `null`
+
+An **absent** key never touches the current value. A key sent with an **explicit `null`** (present,
+raw value `nil`) is governed by `nullable`:
+
+| `nullable` | Explicit `null` |
+|---|---|
+| undeclared | skipped, as an absent key (`default` still applies) — **deprecated**, emits a warning |
+| `true` | clears the value: `nil`, or `[]` for a collection (`many: true`, `type :array`); `default` does not apply |
+| `false` | refused with an `InvalidNilValueError` on the param's path; the key itself stays optional |
+
+```ruby
+attribute :nickname, nullable: true          # { nickname: null } clears it
+attribute :vin_mandatory, nullable: false    # NOT NULL column: a null is an error, absence is fine
+association :category do
+  allowing -> { Category.enabled }
+  nullable true                              # { category: null } unlinks the category
+end
+```
+
+- `required` wins: a required param refuses a null whatever `nullable` says.
+- `""`, `[]`, `{}` are not explicit nulls and keep being skipped. On a nested `from :info, :status`,
+  `{ info: null }` or `{ info: {} }` is not a null for `status` either.
+- The key is matched exactly as `from` declares it (`:nickname` does not match `"nickname"`; an
+  `ActionController::Parameters` is indifferent to both).
+- A param mapped by a sub-mapper (`association … with`) is never cleared by a null; declaring
+  `nullable` on one raises `ConfigurationError`.
+- On a **persisted** record, clearing a `has_one`/`has_many` reference goes through the association
+  writer, which ActiveRecord applies to the database immediately — as it does for any other value
+  assigned to such a reference.
 
 ### `default`
 
@@ -591,7 +624,7 @@ Attributes that validated successfully still have their instance variables set, 
 ```
 RuntimeError
   |-- ModelMapper::InvalidValueError        # value not in allowed set
-  |     |-- ModelMapper::InvalidNilValueError  # required value is nil/blank
+  |     |-- ModelMapper::InvalidNilValueError  # required value is nil/blank, or a null on `nullable false`
   |-- ModelMapper::InvalidFormatError       # wrong format (float, integer, date)
   |-- ModelMapper::RecordError              # wraps the target's own (ActiveRecord) error(s) for an attribute
   |-- ModelMapper::ValidationError          # wraps all errors (mapper + record) from a single call
@@ -621,6 +654,21 @@ removed in a later release. See `CHANGELOG.md`.
 
 `type :array` with a scalar `of` (`:string`, `:integer`, `:float`, `:date`, `:boolean`,
 `:enumerated`, `:custom`, `:any`) is **not** deprecated.
+
+### An explicit `null` being ignored
+
+A key sent with an explicit `null` on a param that declares no `nullable` is still skipped, like an
+absent key, but a future release will **clear** the value instead. Each such null emits, once per
+mapper class and param:
+
+```
+[ModelMapper] WidgetMapper: `nickname` received an explicit null, which is ignored; a future release
+will clear the value instead. Declare `nullable true` to clear it now, or `nullable false` to reject
+the null.
+```
+
+Declare `nullable true` where the client means "clear it", `nullable false` where the record cannot
+hold a null. A client that sends `null` to mean "leave it alone" should stop sending the key.
 
 ## Tests
 
