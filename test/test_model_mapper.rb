@@ -1126,12 +1126,15 @@ class TestModelMapper < Minitest::Test
     assert_equal [false, true], widget.flags
   end
 
-  def test_boolean_invalid_utf8_string_is_false
-    widget = Widget.new
-    flags = ["\xFF".dup.force_encoding('UTF-8'), "yes\xFF".dup.force_encoding('UTF-8')]
-    ArrayWidgetMapper.new(widget, { flags: flags }).map_to_model
+  # An invalidly encoded string is malformed, not false: it is refused before the cast.
+  def test_boolean_invalid_utf8_string_is_a_format_error
+    widget  = Widget.new
+    flags   = ["\xFF".dup.force_encoding('UTF-8'), "yes\xFF".dup.force_encoding('UTF-8')]
+    service = ArrayWidgetMapper.new(widget, { flags: flags })
+    service.map_to_model
 
-    assert_equal [false, false], widget.flags
+    refute service.valid?
+    assert_kind_of ModelMapper::InvalidFormatError, service.errors['flags.0']
   end
 
   def test_boolean_true_values_are_pinned
