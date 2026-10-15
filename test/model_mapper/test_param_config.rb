@@ -245,4 +245,32 @@ class TestParamConfig < Minitest::Test
     assert_equal false, @config.merge!(ModelMapper::ParamConfig.new(:street_id)).nullable_value
   end
 
+
+  # #immediate_write
+
+  def test_immediate_write_is_undeclared_by_default
+    assert_nil @config.immediate_write_value
+  end
+
+  def test_dup_copies_immediate_write
+    @config.immediate_write false
+    assert_equal false, @config.dup.immediate_write_value
+  end
+
+  def test_merge_relaxes_and_tightens_immediate_write
+    @config.immediate_write false
+    relaxing = ModelMapper::ParamConfig.new(:street_id)
+    relaxing.immediate_write true
+    assert_equal true, @config.merge!(relaxing).immediate_write_value
+
+    tightening = ModelMapper::ParamConfig.new(:street_id)
+    tightening.immediate_write false
+    assert_equal false, @config.merge!(tightening).immediate_write_value
+  end
+
+  def test_merge_keeps_immediate_write_when_the_other_is_silent
+    @config.immediate_write false
+    assert_equal false, @config.merge!(ModelMapper::ParamConfig.new(:street_id)).immediate_write_value
+  end
+
 end

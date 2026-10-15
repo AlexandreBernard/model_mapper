@@ -324,13 +324,14 @@ class TestExplicitNull < Minitest::Test
     assert_equal [], widget.numbers
   end
 
-  # Known limitation (see the spec): a has_many reference is assigned like any other reference value,
-  # and ActiveRecord nullifies the previous children immediately on a persisted parent.
+  # On a persisted parent ActiveRecord nullifies the previous children at once: `immediate_write true`
+  # accepts that write (see test_immediate_write.rb for the undeclared and refused cases).
   def test_nullable_true_empties_a_many_reference
     klass = mapper do
       association :parts, many: true do
         allowing -> { Part.all }
         nullable true
+        immediate_write true
       end
     end
     widget = Widget.create!
