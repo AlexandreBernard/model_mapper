@@ -23,6 +23,9 @@ class IwTaggedWidget < ActiveRecord::Base
 
 end
 
+# Loads the same rows as Part, as another class (no STI column): ActiveRecord's replace tells them apart.
+class IwSubPart < Part; end
+
 # A parent whose own validation reports on the reference attribute, to check the refusal is not
 # reported twice.
 class IwValidatedWidget < ActiveRecord::Base
@@ -77,7 +80,8 @@ class TestImmediateWrite < Minitest::Test
     end
   end
 
-  def refusal = I18n.t('errors.invalid_value_details.reference_write_refused')
+  def refusal = 'the associated records cannot be changed here, as it would write to the database before the ' \
+                'request is validated; change them in the caller.'
 
   # --- undeclared: written as before, with a warning ---
 
@@ -132,6 +136,23 @@ class TestImmediateWrite < Minitest::Test
       klass.map_to_model(Widget.create!, { parts: [{ id: b.id }] })
     end
     assert_equal 1, err.scan(WRITE_WARNING).size
+  end
+
+  def test_warning_is_emitted_once_per_param_of_one_mapper
+    klass = mapper do
+      association :parts, many: true do allowing -> { Part.all } end
+      association :manual do allowing -> { Manual.all } end
+    end
+    part = Part.create!(name: 'a')
+    manual = Manual.create!(title: 'm')
+
+    _, err = capture_io do
+      klass.map_to_model(Widget.create!, { parts: [{ id: part.id }], manual: { id: manual.id } })
+      klass.map_to_model(Widget.create!, { parts: [{ id: part.id }], manual: { id: manual.id } })
+    end
+    assert_equal 2, err.scan(WRITE_WARNING).size
+    assert_match(/`parts`/, err)
+    assert_match(/`manual`/, err)
   end
 
   def test_two_mappers_warn_separately
@@ -204,6 +225,48 @@ class TestImmediateWrite < Minitest::Test
     manual = Manual.create!(title: 'm', widget:)
 
     assert_output(nil, '') { manual_mapper.map_to_model!(widget, { manual: { id: manual.id } }) }
+  end
+
+  def test_unsaved_child_in_the_loaded_target_is_not_a_change
+    widget = Widget.create!
+    part = Part.create!(name: 'a', widget:)
+    widget.parts.load
+    widget.parts.build(name: 'draft')
+
+    assert_output(nil, '') { assert parts_mapper(false).map_to_model(widget, { parts: [{ id: part.id }] }).valid? }
+    assert_equal widget.id, part.reload.widget_id
+  end
+
+  def test_same_rows_loaded_as_another_class_are_a_change
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { IwSubPart.all }
+        immediate_write false
+      end
+    end
+    widget = Widget.create!
+    part = Part.create!(name: 'a', widget:)
+
+    result = klass.map_to_model(widget, { parts: [{ id: part.id }] })
+    assert_equal ['parts'], result.errors.keys
+    assert_equal widget.id, part.reload.widget_id
+  end
+
+  def test_strict_loading_parent_is_read_without_violation
+    widget = Widget.create!
+    a = Part.create!(name: 'a', widget:)
+    b = Part.create!(name: 'b')
+
+    strict = Widget.strict_loading.find(widget.id)
+    assert_output(nil, '') { assert parts_mapper.map_to_model(strict, { parts: [{ id: a.id }] }).valid? }
+
+    strict = Widget.strict_loading.find(widget.id)
+    assert_output(nil, WRITE_WARNING) { parts_mapper.map_to_model(strict, { parts: [{ id: b.id }] }) }
+
+    strict = Widget.strict_loading.find(widget.id)
+    assert_equal ['parts'], parts_mapper(false).map_to_model(strict, { parts: [{ id: a.id }] }).errors.keys
+    assert_nil a.reload.widget_id
+    assert_equal widget.id, b.reload.widget_id
   end
 
   def test_new_parent_does_not_warn_nor_write
@@ -370,6 +433,22 @@ class TestImmediateWrite < Minitest::Test
     assert_equal widget.id, manual.reload.widget_id
   end
 
+  # A `default` is assigned like a sent value, so it writes the same way and is refused the same way.
+  def test_false_refuses_a_default_that_would_write
+    widget = Widget.create!
+    Part.create!(name: 'a', widget:)
+    Part.create!(name: 'b')
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        default -> { Part.where(name: 'b').to_a }
+        immediate_write false
+      end
+    end
+
+    assert_equal ['parts'], klass.map_to_model(widget, {}).errors.keys
+  end
+
   def test_false_accepts_an_unchanged_value
     widget = Widget.create!
     a = Part.create!(name: 'a', widget:)
@@ -454,8 +533,10 @@ class TestImmediateWrite < Minitest::Test
       end
     end
     part = Part.create!(name: 'p')
+    widget = Widget.create!
 
-    assert child.map_to_model(Widget.create!, { parts: [{ id: part.id }] }).valid?
+    assert_output(nil, '') { assert child.map_to_model(widget, { parts: [{ id: part.id }] }).valid? }
+    assert_equal widget.id, part.reload.widget_id
   end
 
   # --- non-ActiveRecord targets ---
