@@ -290,6 +290,21 @@ class TestImmediateWrite < Minitest::Test
     assert_equal widget.id, part.reload.widget_id
   end
 
+  # ActiveRecord's own has_one replace raises on a strict_loading owner; the check neither hides nor
+  # changes that, whatever immediate_write says.
+  def test_strict_loading_parent_one_reference_raises_as_activerecord_does
+    widget = Widget.create!
+    manual = Manual.create!(title: 'm', widget:)
+
+    [manual_mapper, manual_mapper(false), manual_mapper(true)].each do |klass|
+      strict = Widget.strict_loading.find(widget.id)
+      assert_raises(ActiveRecord::StrictLoadingViolationError) do
+        klass.map_to_model(strict, { manual: { id: manual.id } })
+      end
+    end
+    assert_equal widget.id, manual.reload.widget_id
+  end
+
   def test_new_parent_does_not_warn_nor_write
     part = Part.create!(name: 'a')
     widget = Widget.new

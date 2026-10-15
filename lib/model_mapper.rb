@@ -409,13 +409,17 @@ module ModelMapper
     end
   end
 
-  # The records currently associated. An unloaded association is read through its scope, which a
-  # `strict_loading` owner allows (only a lazy load raises), and that snapshot becomes the loaded target —
-  # as ActiveRecord's own replace would load it — so the writer later diffs against the very records
-  # checked here, not a fresh read that may hold a child attached in between.
+  # The records currently associated, loaded onto the association exactly as ActiveRecord's own replace
+  # loads them, so the writer then diffs against the very records checked here (not a fresh read that may
+  # hold a child attached in between), and a `strict_loading` owner behaves as it does without the check:
+  # a collection's replace skips strict loading (private API, hence `send`; an ActiveRecord without it
+  # does not skip either), a has_one's replace raises StrictLoadingViolationError.
   def current_association_records(association, reflection)
-    association.target = reflection.collection? ? association.scope.to_a : association.scope.first unless association.loaded?
-    association.target
+    if reflection.collection? && association.respond_to?(:skip_strict_loading, true)
+      association.send(:skip_strict_loading) { association.load_target }
+    else
+      association.load_target
+    end
   end
 
   def record_keys(records) = records.to_set { |record| [record.class, record.id] }
