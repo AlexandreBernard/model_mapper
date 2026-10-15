@@ -284,8 +284,8 @@ end
 - ⚠️ On a **persisted** record, clearing a `has_one`/`has_many` reference goes through the association
   writer, which ActiveRecord applies to the database **immediately, even if the mapping then fails
   validation**: the previous children are nullified, or **deleted** under `dependent: :destroy`. Any
-  other value assigned to such a reference does the same today. Do not declare `nullable true` on one
-  unless that is acceptable.
+  other value assigned to such a reference does the same today (issue #13). Do not declare
+  `nullable true` on one unless that is acceptable.
 
 ### `default`
 

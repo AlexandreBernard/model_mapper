@@ -96,7 +96,7 @@ database immediately (ActiveRecord nullifies the previous child/children). Measu
 a759e6d: `{ parts: [{ id: p2.id }], manual: { id: m2.id }, price: 'abc' }` raises `ValidationError`
 and has already set `widget_id` to `nil` on the previous part and manual. `nullable true` on such an
 association goes through the same assignment and inherits that behaviour; it is not made worse in
-kind, and fixing the assignment path is a separate change.
+kind, and fixing the assignment path is a separate change: issue #13.
 
 ## Measurements
 
