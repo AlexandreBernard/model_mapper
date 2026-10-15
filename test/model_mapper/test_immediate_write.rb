@@ -16,6 +16,42 @@ end
 
 class IwTag < ActiveRecord::Base; end
 
+# A collection with a composite primary key, and a :through whose source matches on a non-id key.
+ActiveRecord::Schema.define do
+  create_table :iw_ck_items, primary_key: %i[shop_id id], force: true do |t|
+    t.integer :shop_id
+    t.integer :id
+    t.integer :widget_id
+  end
+
+  create_table :iw_coded_tags, force: true do |t|
+    t.integer :code
+  end
+
+  create_table :iw_codings, force: true do |t|
+    t.integer :widget_id
+    t.integer :iw_coded_tag_code
+  end
+end
+
+class IwCkItem < ActiveRecord::Base; end
+class IwCodedTag < ActiveRecord::Base; end
+
+class IwCoding < ActiveRecord::Base
+
+  belongs_to :iw_coded_tag, primary_key: :code, foreign_key: :iw_coded_tag_code
+
+end
+
+class IwKeyedWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :iw_ck_items, foreign_key: 'widget_id'
+  has_many :iw_codings, foreign_key: 'widget_id'
+  has_many :iw_coded_tags, through: :iw_codings
+
+end
+
 class IwTaggedWidget < ActiveRecord::Base
 
   self.table_name = 'widgets'
@@ -50,6 +86,7 @@ class TestImmediateWrite < Minitest::Test
     Category.delete_all
     IwTag.delete_all
     IwTag.connection.execute('DELETE FROM iw_tags_widgets')
+    [IwCkItem, IwCodedTag, IwCoding].each(&:delete_all)
     ModelMapper.reset_deprecation_warnings!
   end
 
@@ -693,6 +730,88 @@ class TestImmediateWrite < Minitest::Test
     assert_equal [1, 2], widget.category_ids
   end
 
+  # A :through or HABTM replace counts occurrences: a repeated id adds a join row.
+  def test_false_refuses_a_repeated_id_on_a_habtm
+    widget = IwTaggedWidget.create!
+    tag = IwTag.create!(name: 't')
+    widget.iw_tags << tag
+    ids_klass = mapper do
+      attribute :iw_tag_ids do
+        type :array
+        of :integer
+        immediate_write false
+      end
+    end
+    reference_klass = mapper do
+      association :iw_tags, many: true do
+        allowing -> { IwTag.all }
+        immediate_write false
+      end
+    end
+
+    assert_equal ['iw_tag_ids'], ids_klass.map_to_model(widget, { iw_tag_ids: [tag.id, tag.id] }).errors.keys
+    assert_equal ['iw_tags'], reference_klass.map_to_model(widget.reload, { iw_tags: [{ id: tag.id }, { id: tag.id }] }).errors.keys
+    assert_equal 1, IwTag.connection.select_value('SELECT COUNT(*) FROM iw_tags_widgets')
+  end
+
+  def test_composite_key_ids_are_compared_not_crashed_on
+    widget = IwKeyedWidget.create!
+    IwCkItem.create!(id: [1, 1], widget_id: widget.id)
+    IwCkItem.create!(id: [1, 2])
+    klass = mapper do
+      attribute :iw_ck_item_ids do immediate_write false end
+    end
+
+    assert klass.map_to_model(widget, { iw_ck_item_ids: [[1, 1]] }).valid?
+    assert_equal ['iw_ck_item_ids'], klass.map_to_model(widget, { iw_ck_item_ids: [[1, 2]] }).errors.keys
+    assert_nil IwCkItem.find([1, 2]).widget_id
+  end
+
+  # The deprecated `of :referential` is assigned as record ids, which a :through looks up by its source
+  # key (`code` here): the check reads the same ids the writer receives.
+  def test_referential_ids_are_read_as_assigned_on_a_through_with_a_source_key
+    widget = IwKeyedWidget.create!
+    first = IwCodedTag.create!
+    second = IwCodedTag.create!
+    first.update!(code: second.id)
+    second.update!(code: first.id)
+    IwCoding.create!(widget_id: widget.id, iw_coded_tag_code: first.code)
+    klass = mapper do
+      attribute :iw_coded_tag_ids do
+        type :array
+        of :referential
+        allowing -> { IwCodedTag.all }
+        immediate_write false
+      end
+    end
+
+    result = klass.map_to_model(widget, { iw_coded_tag_ids: [first.id] })
+    assert_equal ['iw_coded_tag_ids'], result.errors.keys
+    assert_equal [first.code], IwCoding.pluck(:iw_coded_tag_code)
+  end
+
+  def test_false_accepts_referential_ids_of_the_current_records
+    widget = Widget.create!
+    part = Part.create!(name: 'a', widget:)
+    klass = ids_mapper(false) do
+      type :array
+      of :referential
+      allowing -> { Part.all }
+    end
+
+    assert_output(nil, /deprecated/) { assert klass.map_to_model(widget, { part_ids: [part.id] }).valid? }
+    assert_equal widget.id, part.reload.widget_id
+  end
+
+  def test_unsaved_child_in_the_loaded_target_is_not_an_ids_change
+    widget = Widget.create!
+    part = Part.create!(name: 'a', widget:)
+    widget.parts.load
+    widget.parts.build(name: 'draft')
+
+    assert ids_mapper(false).map_to_model(widget, { part_ids: [part.id] }).valid?
+  end
+
   # --- non-ActiveRecord targets ---
 
   def test_hash_and_poro_targets_are_untouched
@@ -730,6 +849,18 @@ class TestImmediateWrite < Minitest::Test
   def test_rejects_it_on_an_attribute
     klass = mapper do
       attribute :name do immediate_write false end
+    end
+
+    assert_raises(ModelMapper::ConfigurationError) { klass.map_to_model(Widget.new, {}) }
+  end
+
+  def test_rejects_it_on_a_sub_mapper_named_like_ids
+    sub = mapper { attribute :name }
+    klass = mapper do
+      association :part_ids, many: true do
+        with sub
+        immediate_write false
+      end
     end
 
     assert_raises(ModelMapper::ConfigurationError) { klass.map_to_model(Widget.new, {}) }

@@ -175,16 +175,22 @@ end
 
   The assignment writes nothing on a new (unsaved) record, for a `belongs_to`, and when the value equals
   the current one, compared as ActiveRecord does (same child; same records, in any order — an unsaved
-  child already in the association does not count). A key that is absent, or a null that is skipped,
+  child already in the association does not count; a repeated record is no change on a `has_many` but
+  adds a join row on a `:through` or HABTM, so it counts there). A key that is absent, or a null that is skipped,
   assigns nothing and is never refused — unless a `default` fills it: a default is assigned like a sent
   value, and is refused like one.
 
   The same holds for an `attribute` assigned through a collection's **ids writer** — `part_ids` for a
   `has_many :parts`, whatever its `type` (`of :integer`, untyped, or the deprecated `of :referential`):
   ActiveRecord's `part_ids=` replaces the collection at once just like `parts=`. Declare
-  `immediate_write` on it the same way. The ids are compared as ActiveRecord's ids writer reads them
-  (cast to the key type, blanks dropped), and an `*_ids` attribute that is not a collection's ids
-  writer on the record (a plain accessor) is left alone. A future release refuses by default; see
+  `immediate_write` on it the same way. The ids that reach the writer are compared as ActiveRecord's
+  ids writer reads them (blanks dropped, cast to the key type, column by column for a composite key;
+  an `of :integer` attribute already refuses a blank element itself), and an `*_ids` attribute that is
+  not a collection's ids writer on the record (a plain accessor) is left alone.
+
+  The check runs when the value is validated. A `before_assignation` hook that replaces a guarded
+  value in the params it receives is not checked again: the replacement is assigned as the hook
+  wrote it. A future release refuses by default; see
   [Deprecations](#a-reference-written-during-the-map). Replace such children in the caller, after the
   map succeeded, when the write must wait for validation.
 - **Error reporting differs by mode for 1‑N** (worth knowing): a 1‑N **reference** fails fast — the

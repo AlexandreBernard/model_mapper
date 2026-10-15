@@ -422,8 +422,9 @@ module ModelMapper
   # Whether assigning `value` makes ActiveRecord write to the database now: a reference `association`
   # assigned through its writer (`parts=`, `manual=`), or any attribute assigned through a collection's
   # ids writer (`part_ids=`), whatever its type. The comparison follows ActiveRecord's own replace:
-  # records are equal by class and id (`eql?`), so another order or a repeated id writes nothing, and an
-  # unsaved record in the current target is never written by the replace.
+  # records are equal by class and id (`eql?`), another order writes nothing, and an unsaved record in
+  # the current target is never written by the replace; a repeated record writes nothing on a has_many
+  # but adds a join row on a :through or HABTM (see collection_keys).
   def immediate_write?(target, param_config, value)
     return false unless target.respond_to?(:persisted?) && target.persisted?
     return false unless target.class.respond_to?(:reflect_on_association)
@@ -441,9 +442,11 @@ module ModelMapper
     reflection = target.class.reflect_on_association(param_config.name)
     return false if reflection.nil? || reflection.macro == :belongs_to
 
-    current = current_association_records(target.association(reflection.name), reflection)
+    association = target.association(reflection.name)
+    current = current_association_records(association, reflection)
     if reflection.collection?
-      record_keys(Array(value)) != record_keys(current.reject(&:new_record?))
+      collection_keys(association, record_keys(Array(value))) !=
+        collection_keys(association, record_keys(current.reject(&:new_record?)))
     else
       current != value
     end
@@ -457,17 +460,29 @@ module ModelMapper
     model.reflect_on_all_associations.find { |r| r.collection? && "#{r.name.to_s.singularize}_ids" == name }
   end
 
-  # Mirrors ActiveRecord's ids writer, which drops blank ids, casts the others to the key type and
-  # replaces the collection with the matching records. A record element (the deprecated
-  # `of :referential` validates into records) stands for its key.
+  # Mirrors ActiveRecord's ids writer, which drops blank ids, casts the others to the key type (column by
+  # column for a composite key) and replaces the collection with the records holding those keys. A record
+  # element (the deprecated `of :referential` validates into records) is assigned as its `id` (see
+  # run_mapping), so it is read the same way here.
   def ids_write?(target, reflection, value)
-    key = reflection.association_primary_key
-    key_type = reflection.klass.type_for_attribute(key)
-    ids = Array(value).map { |id| id.is_a?(ActiveRecord::Base) ? id.public_send(key) : id }
-    new_ids = ids.reject(&:blank?).to_set { |id| key_type.cast(id) }
+    columns = Array(reflection.association_primary_key)
+    types = columns.map { |column| reflection.klass.type_for_attribute(column) }
+    cast = lambda do |id|
+      columns.one? ? types.first.cast(id) : types.each_with_index.map { |type, i| type.cast(Array(id)[i]) }
+    end
+    # `attributes`, not `public_send`/`read_attribute`: under a composite key both read "id" as the whole key.
+    key_of = ->(record) { columns.one? ? record.attributes[columns.first] : record.attributes.values_at(*columns) }
 
-    current = current_association_records(target.association(reflection.name), reflection)
-    new_ids != current.reject(&:new_record?).to_set { |record| record.public_send(key) }
+    ids = Array(value).map { |id| id.is_a?(ActiveRecord::Base) ? id.id : id }.reject(&:blank?).map(&cast)
+    association = target.association(reflection.name)
+    current = current_association_records(association, reflection).reject(&:new_record?).map(&key_of)
+    collection_keys(association, ids) != collection_keys(association, current)
+  end
+
+  # ActiveRecord's replace diffs a has_many with Array#- (a repeated record changes nothing), but a
+  # :through or HABTM by counting occurrences (a repeated record adds a join row): compare likewise.
+  def collection_keys(association, keys)
+    association.is_a?(ActiveRecord::Associations::HasManyThroughAssociation) ? keys.tally : keys.to_set
   end
 
   # The records currently associated, loaded onto the association exactly as ActiveRecord's own replace
@@ -483,7 +498,7 @@ module ModelMapper
     end
   end
 
-  def record_keys(records) = records.to_set { |record| [record.class, record.id] }
+  def record_keys(records) = records.map { |record| [record.class, record.id] }
 
   # Run the target's own ActiveModel/ActiveRecord validations (without saving) and merge them into
   # the combined error hash (one entry per attribute), skipping any attribute already reported by a
