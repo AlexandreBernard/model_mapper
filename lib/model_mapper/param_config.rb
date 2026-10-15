@@ -85,8 +85,9 @@ module ModelMapper
     # Whether a reference `association` may be assigned when ActiveRecord would write that assignment to
     # the database immediately: a has_one/has_many/HABTM on a persisted record, with a value that differs
     # from the current one. Such a write happens during the map, before validity is known, and stays even
-    # if the mapping then fails. `true` accepts it, `false` refuses it with an InvalidValueError. Undeclared
-    # (nil) still accepts it, with a deprecation warning, since a future release refuses it by default.
+    # if the mapping then fails. `true` accepts it; `false` and undeclared (nil) refuse it with an
+    # InvalidValueError. Undeclared is held as nil rather than false so `explicitly_set?` tells "said
+    # nothing" from "said false", letting a child override its parent either way.
     def immediate_write(value)
       @immediate_write_value = value
     end

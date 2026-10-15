@@ -76,18 +76,6 @@ module ModelMapper
          'value instead. Declare `nullable true` to clear it now, or `nullable false` to reject the null.'
   end
 
-  # Deprecation: a reference that does not declare `immediate_write` is still assigned when ActiveRecord
-  # writes that assignment to the database at once, but a future release refuses it instead.
-  def self.warn_immediate_write_once(mapper_class, param_name, keys)
-    return unless first_deprecation?(:immediate_write, mapper_class, param_name)
-
-    warn "[ModelMapper] #{mapper_label(mapper_class, param_name, keys)} changed an association of a persisted " \
-         'record, which ActiveRecord writes to the database immediately, during the map: it stays written even if ' \
-         'the mapping then fails, and old children are deleted under a deleting `dependent`. A future release will ' \
-         'refuse it instead. Declare `immediate_write false` to refuse it now, or `immediate_write true` to keep ' \
-         'writing.'
-  end
-
   # Each deprecation is warned at most once per (kind, mapper class, param) per process — the same
   # endpoint receives the same payload on every request. Keyed by the class's object_id rather than the
   # class itself, so a warned anonymous mapper can still be garbage-collected (a reused id can at worst
@@ -374,19 +362,15 @@ module ModelMapper
   # A reference `association` is assigned through the ActiveRecord association writer, which on a
   # persisted record writes at once for anything but a belongs_to (has_one saves/nullifies the child,
   # has_many and HABTM insert/update/delete rows) — during the map, before validity is known, with no
-  # rollback. `immediate_write` decides: false refuses the value, true accepts it, undeclared accepts it
-  # with a deprecation warning. A value equal to the current one writes nothing, so it always passes.
+  # rollback. Such a value is refused unless the reference declares `immediate_write true`. A value
+  # equal to the current one writes nothing, so it always passes.
   def guard_immediate_write!(target, param_config, value)
     return if param_config.immediate_write_value == true
     return unless immediate_write?(target, param_config, value)
 
-    if param_config.immediate_write_value == false
-      field = param_config.keys.join('.')
-      raise ModelMapper::InvalidValueError.new(field,
-                                               details: I18n.t('errors.invalid_value_details.reference_write_refused'))
-    end
-
-    ModelMapper.warn_immediate_write_once(self.class, param_config.name, param_config.keys)
+    field = param_config.keys.join('.')
+    raise ModelMapper::InvalidValueError.new(field,
+                                             details: I18n.t('errors.invalid_value_details.reference_write_refused'))
   end
 
   # Whether assigning `value` to this reference makes ActiveRecord write to the database now. The

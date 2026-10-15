@@ -37,11 +37,9 @@ class IwValidatedWidget < ActiveRecord::Base
 end
 
 # Assigning a has_one/has_many/HABTM reference on a persisted record is written to the database by
-# ActiveRecord immediately, during the map. Undeclared, it still happens but warns; `immediate_write
-# false` refuses it; `immediate_write true` accepts it silently.
+# ActiveRecord immediately, during the map. It is refused unless the reference declares
+# `immediate_write true`; `immediate_write false` says the same as leaving it undeclared.
 class TestImmediateWrite < Minitest::Test
-
-  WRITE_WARNING = /changed an association of a persisted record/
 
   def setup
     Widget.delete_all
@@ -50,7 +48,6 @@ class TestImmediateWrite < Minitest::Test
     Category.delete_all
     IwTag.delete_all
     IwTag.connection.execute('DELETE FROM iw_tags_widgets')
-    ModelMapper.reset_deprecation_warnings!
   end
 
   def mapper(&block)
@@ -83,113 +80,40 @@ class TestImmediateWrite < Minitest::Test
   def refusal = 'the associated records cannot be changed here, as it would write to the database before the ' \
                 'request is validated; change them in the caller.'
 
-  # --- undeclared: written as before, with a warning ---
+  # --- undeclared: refused, nothing written, nothing warned ---
 
-  def test_undeclared_many_replace_writes_and_warns
+  def test_undeclared_refuses_a_many_replace_and_writes_nothing
     widget = Widget.create!
     old = Part.create!(name: 'a', widget:)
     new = Part.create!(name: 'b')
 
-    assert_output(nil, WRITE_WARNING) { parts_mapper.map_to_model!(widget, { parts: [{ id: new.id }] }) }
-    assert_nil old.reload.widget_id
-    assert_equal widget.id, new.reload.widget_id
+    result = nil
+    assert_output(nil, '') { result = parts_mapper.map_to_model(widget, { parts: [{ id: new.id }], price: 'abc' }) }
+    assert_equal %w[parts price], result.errors.keys.sort
+    assert_equal refusal, result.errors['parts'].details
+    assert_equal widget.id, old.reload.widget_id
+    assert_nil new.reload.widget_id
   end
 
-  def test_warning_names_the_mapper_param_and_path
-    klass = mapper do
-      association :parts, many: true do
-        from :widget, :parts
-        allowing -> { Part.all }
-      end
-    end
+  def test_undeclared_refuses_a_one_replace
     widget = Widget.create!
-    part = Part.create!(name: 'b')
+    old = Manual.create!(title: 'm1', widget:)
+    new = Manual.create!(title: 'm2')
 
-    assert_output(nil, /#<Class:0x\h+>: `parts` \(sent as `widget.parts`\).*immediate_write/m) do
-      klass.map_to_model(widget, { widget: { parts: [{ id: part.id }] } })
-    end
+    assert_equal ['manual'], manual_mapper.map_to_model(widget, { manual: { id: new.id } }).errors.keys
+    assert_equal widget.id, old.reload.widget_id
+    assert_nil new.reload.widget_id
   end
 
-  def test_undeclared_one_replace_warns
-    widget = Widget.create!
-    Manual.create!(title: 'm1', widget:)
-    other = Manual.create!(title: 'm2')
-
-    assert_output(nil, WRITE_WARNING) { manual_mapper.map_to_model!(widget, { manual: { id: other.id } }) }
-  end
-
-  def test_undeclared_one_attach_on_a_parent_with_no_child_warns
+  def test_undeclared_refuses_a_one_attach_on_a_parent_with_no_child
     widget = Widget.create!
     manual = Manual.create!(title: 'm')
 
-    assert_output(nil, WRITE_WARNING) { manual_mapper.map_to_model!(widget, { manual: { id: manual.id } }) }
-    assert_equal widget.id, manual.reload.widget_id
+    assert_equal ['manual'], manual_mapper.map_to_model(widget, { manual: { id: manual.id } }).errors.keys
+    assert_nil manual.reload.widget_id
   end
 
-  def test_warning_is_emitted_once_per_mapper_and_param
-    klass = parts_mapper
-    a = Part.create!(name: 'a')
-    b = Part.create!(name: 'b')
-
-    _, err = capture_io do
-      klass.map_to_model(Widget.create!, { parts: [{ id: a.id }] })
-      klass.map_to_model(Widget.create!, { parts: [{ id: b.id }] })
-    end
-    assert_equal 1, err.scan(WRITE_WARNING).size
-  end
-
-  def test_warning_is_emitted_once_per_param_of_one_mapper
-    klass = mapper do
-      association :parts, many: true do allowing -> { Part.all } end
-      association :manual do allowing -> { Manual.all } end
-    end
-    part = Part.create!(name: 'a')
-    manual = Manual.create!(title: 'm')
-
-    _, err = capture_io do
-      klass.map_to_model(Widget.create!, { parts: [{ id: part.id }], manual: { id: manual.id } })
-      klass.map_to_model(Widget.create!, { parts: [{ id: part.id }], manual: { id: manual.id } })
-    end
-    assert_equal 2, err.scan(WRITE_WARNING).size
-    assert_match(/`parts`/, err)
-    assert_match(/`manual`/, err)
-  end
-
-  def test_two_mappers_warn_separately
-    a = Part.create!(name: 'a')
-    b = Part.create!(name: 'b')
-
-    _, err = capture_io do
-      parts_mapper.map_to_model(Widget.create!, { parts: [{ id: a.id }] })
-      parts_mapper.map_to_model(Widget.create!, { parts: [{ id: b.id }] })
-    end
-    assert_equal 2, err.scan(WRITE_WARNING).size
-  end
-
-  def test_write_warning_and_explicit_null_warning_are_independent
-    klass = parts_mapper
-    widget = Widget.create!
-    part = Part.create!(name: 'a')
-
-    assert_output(nil, /explicit null/) { klass.map_to_model(widget, { parts: nil }) }
-    assert_output(nil, WRITE_WARNING) { klass.map_to_model(widget, { parts: [{ id: part.id }] }) }
-  end
-
-  def test_both_resets_forget_the_write_warning
-    klass = parts_mapper
-    a = Part.create!(name: 'a')
-    b = Part.create!(name: 'b')
-    c = Part.create!(name: 'c')
-    widget = Widget.create!
-
-    assert_output(nil, WRITE_WARNING) { klass.map_to_model(widget, { parts: [{ id: a.id }] }) }
-    ModelMapper.reset_deprecation_warnings!
-    assert_output(nil, WRITE_WARNING) { klass.map_to_model(widget, { parts: [{ id: b.id }] }) }
-    ModelMapper.reset_explicit_null_warnings!
-    assert_output(nil, WRITE_WARNING) { klass.map_to_model(widget, { parts: [{ id: c.id }] }) }
-  end
-
-  def test_undeclared_nullable_clear_of_a_many_reference_warns
+  def test_undeclared_refuses_a_nullable_clear_of_a_many_reference
     klass = mapper do
       association :parts, many: true do
         allowing -> { Part.all }
@@ -199,13 +123,47 @@ class TestImmediateWrite < Minitest::Test
     widget = Widget.create!
     part = Part.create!(name: 'p', widget:)
 
-    assert_output(nil, WRITE_WARNING) { klass.map_to_model(widget, { parts: nil }) }
-    assert_nil part.reload.widget_id
+    assert_equal refusal, klass.map_to_model(widget, { parts: nil }).errors['parts'].details
+    assert_equal widget.id, part.reload.widget_id
   end
 
-  # --- no write, no warning ---
+  def test_undeclared_error_is_keyed_on_the_params_path
+    klass = mapper do
+      association :parts, many: true do
+        from :widget, :parts
+        allowing -> { Part.all }
+      end
+    end
+    part = Part.create!(name: 'p')
 
-  def test_same_set_in_another_order_does_not_warn
+    assert_equal ['widget.parts'], klass.map_to_model(Widget.create!, { widget: { parts: [{ id: part.id }] } }).errors.keys
+  end
+
+  def test_undeclared_accepts_an_absent_key_and_an_ignored_null
+    widget = Widget.create!
+    part = Part.create!(name: 'p', widget:)
+
+    assert parts_mapper.map_to_model(widget, {}).valid?
+    assert_output(nil, /explicit null/) { assert parts_mapper.map_to_model(widget, { parts: nil }).valid? }
+    assert_equal widget.id, part.reload.widget_id
+  end
+
+  def test_child_of_an_undeclared_parent_accepts_with_true
+    child = Class.new(parts_mapper) do
+      map_model do
+        association :parts, many: true do immediate_write true end
+      end
+    end
+    widget = Widget.create!
+    part = Part.create!(name: 'p')
+
+    assert child.map_to_model(widget, { parts: [{ id: part.id }] }).valid?
+    assert_equal widget.id, part.reload.widget_id
+  end
+
+  # --- no write: accepted whatever immediate_write says ---
+
+  def test_same_set_in_another_order_is_accepted
     widget = Widget.create!
     a = Part.create!(name: 'a', widget:)
     b = Part.create!(name: 'b', widget:)
@@ -213,14 +171,14 @@ class TestImmediateWrite < Minitest::Test
     assert_output(nil, '') { parts_mapper.map_to_model!(widget, { parts: [{ id: b.id }, { id: a.id }] }) }
   end
 
-  def test_duplicated_ids_of_the_current_set_do_not_warn
+  def test_duplicated_ids_of_the_current_set_are_accepted
     widget = Widget.create!
     part = Part.create!(name: 'a', widget:)
 
     assert_output(nil, '') { parts_mapper.map_to_model!(widget, { parts: [{ id: part.id }, { id: part.id }] }) }
   end
 
-  def test_same_one_child_does_not_warn
+  def test_same_one_child_is_accepted
     widget = Widget.create!
     manual = Manual.create!(title: 'm', widget:)
 
@@ -261,12 +219,9 @@ class TestImmediateWrite < Minitest::Test
     assert_output(nil, '') { assert parts_mapper.map_to_model(strict, { parts: [{ id: a.id }] }).valid? }
 
     strict = Widget.strict_loading.find(widget.id)
-    assert_output(nil, WRITE_WARNING) { parts_mapper.map_to_model(strict, { parts: [{ id: b.id }] }) }
-
-    strict = Widget.strict_loading.find(widget.id)
-    assert_equal ['parts'], parts_mapper(false).map_to_model(strict, { parts: [{ id: a.id }] }).errors.keys
-    assert_nil a.reload.widget_id
-    assert_equal widget.id, b.reload.widget_id
+    assert_equal ['parts'], parts_mapper.map_to_model(strict, { parts: [{ id: b.id }] }).errors.keys
+    assert_equal widget.id, a.reload.widget_id
+    assert_nil b.reload.widget_id
   end
 
   # A child attached between the check and the assignment (stood in for by a hook) is not detached:
@@ -305,7 +260,7 @@ class TestImmediateWrite < Minitest::Test
     assert_equal widget.id, manual.reload.widget_id
   end
 
-  def test_new_parent_does_not_warn_nor_write
+  def test_new_parent_is_assigned_in_memory
     part = Part.create!(name: 'a')
     widget = Widget.new
 
@@ -314,7 +269,7 @@ class TestImmediateWrite < Minitest::Test
     assert_equal [part], widget.parts.to_a
   end
 
-  def test_belongs_to_reference_does_not_warn
+  def test_belongs_to_reference_is_accepted
     klass = mapper do
       association :category do allowing -> { Category.all } end
     end
