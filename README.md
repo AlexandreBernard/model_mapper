@@ -338,17 +338,25 @@ the field **in silence**, so the caller gets a success for a write that never ha
 precisely what an authorization must never do. `authorize` instead records a
 `ModelMapper::UnauthorizedFieldError` on the field, alongside every other error of the same call.
 
-Three rules:
+Four rules:
 
-- **Weighed only when a value would land on the record, and handed THAT value.** Either the payload
-  carries the field — an explicit `null` counts, a field left out of a partial update does not — or
-  a `default` supplies one. A `default` that resolves to nothing writes nothing, so nothing is
-  refused; a `default` that does supply a value is weighed, because it may itself read the payload
-  and a rule inert on the field it sits next to is worse than no rule at all. Use
-  `default …, authorize: false` when the value is the mapper's own doing (see below).
-- **Weighed before anything else.** A refused field is never validated: the rule reads the value,
-  nothing else does. A caller is not told what is wrong with a write it cannot make. A rule that
-  raises is collected like any other lambda error, not thrown out of `map_to_model`.
+- **Weighed only when a value would land on the record, and handed THAT value.** Three writes count:
+  - the payload carries a non-blank value — weighed on the raw value sent;
+  - an explicit `null` that clears the field (`nullable true`) — weighed on the cleared value;
+  - a `default` lands — whether the key was left out, sent as `null` or blank, or sent invalid under
+    `default_on_invalid` — weighed on the default, because it may itself read the payload and a
+    rule inert on the field it sits next to is worse than no rule at all. Use
+    `default …, authorize: false` when the value is the mapper's own doing (see below).
+
+  Anything that writes nothing is not weighed: a field left out of a partial update, a blank value
+  (`""`, `[]`) or a `null` without `nullable true` and with no default behind it, a `default` that
+  resolves to nothing, an empty list sent to a `many: true` sub-mapper association. A form that
+  posts every field — the untouched ones blank — does not block a caller on the fields it may not set.
+- **A sent value is weighed before validation.** A refused field is never validated: the rule reads
+  the value, nothing else does. A caller is not told what is wrong with a write it cannot make. A
+  default or a clearing is weighed once validation has resolved it — it is only known then. A rule
+  that raises is collected like any other lambda error when an earlier field already failed, on
+  attributes and associations alike, not thrown out of `map_to_model`.
 - **It also guards a validation-only field** (`assign false`). Nothing is written there by
   definition — what is refused is the right to *submit* the field, which is why the message says
   "cannot be set by this caller" rather than "cannot be modified".
@@ -365,8 +373,9 @@ Three rules:
 authorize ->(target, source_params, value) { value.nil? || policy.may_set?(value) }
 ```
 
-A rule is called with as many of `(target, source_params, value)` as its signature accepts. One
-asking for more is refused at class load, as is `authorize` declared twice for the same param (as a
+A rule is called with as many of `(target, source_params, value)` as its signature accepts. A lambda
+requiring more, or requiring a keyword argument, is refused at class load (a plain `proc` tolerates
+missing arguments, so its extra parameters are left `nil`), as is `authorize` declared twice for the same param (as a
 keyword *and* in the block — the keyword wins, so the block rule would vanish silently).
 
 ### Exempting a `default` from the rule
@@ -376,7 +385,7 @@ doing rather than the caller's, exempt it:
 
 ```ruby
 attribute :status do
-  default 'active', authorize: false   # always applied, even to a caller refused on this field
+  default 'active', authorize: false   # applied even to a caller refused on this field, absent or null alike
   authorize -> { admin? }              # governs what the caller sends
 end
 ```

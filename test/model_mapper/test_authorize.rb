@@ -193,8 +193,7 @@ class AuthzDefaultMapper
       authorize -> { allowed.include?(:name) }
     end
 
-    # Weighed on being DECLARED, not on what it returns — resolving it first would mean running the
-    # lambda for a write that is about to be refused.
+    # Resolves to nothing, so it writes nothing: never weighed.
     attribute :code do
       default -> { nil }
       authorize -> { allowed.include?(:code) }
@@ -393,6 +392,58 @@ class AuthzBuildMapper
 
 end
 
+# A value-dependent rule next to a default it refuses: whatever the payload does to reach that
+# default — leave the key out, send null, send blank, send something invalid — the default is the
+# write, so it is what the rule weighs.
+class AuthzGuardedDefaultMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :status do
+      type :enumerated
+      allowing %w[user admin]
+      default 'admin'
+      default_on_invalid true
+      authorize ->(_target, _source, value) { value != 'admin' }
+    end
+  end
+
+end
+
+# `nullable true`: an explicit null clears the value, which is a write the caller asked for.
+class AuthzNullableMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :name do
+      nullable true
+      authorize -> { false }
+    end
+  end
+
+end
+
+# A rule that raises on an association, after an earlier field already failed.
+class AuthzTrippingAssociationMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :quantity do
+      type :integer
+    end
+
+    association :manual_attributes do
+      from :manual
+      with AuthzManualMapper
+      authorize ->(_target, _source, value) { value.fetch(:ok) }
+    end
+  end
+
+end
+
 class TestAuthorize < Minitest::Test
 
   # --- Attributes --------------------------------------------------------------------------
@@ -430,12 +481,32 @@ class TestAuthorize < Minitest::Test
     assert_predicate mapper, :valid?
   end
 
-  # An explicit null IS something the caller sent, so it is weighed — the key being there is what
-  # separates it from a field left out of a partial update.
-  def test_explicit_null_is_weighed
-    mapper = AuthzWidgetMapper.map_to_model(Widget.new, { name: nil }, allowed: [])
+  # Without `nullable true`, an explicit null writes nothing: there is no write to refuse.
+  def test_explicit_null_that_writes_nothing_is_not_weighed
+    widget = Widget.new(name: 'Bolt')
+    mapper = AuthzWidgetMapper.map_to_model(widget, { name: nil }, allowed: [])
+
+    assert_predicate mapper, :valid?
+    assert_equal 'Bolt', widget.name
+  end
+
+  # With `nullable true`, an explicit null clears the field: that is the caller's write, weighed.
+  def test_explicit_null_that_clears_is_weighed
+    widget = Widget.new(name: 'Bolt')
+    mapper = AuthzNullableMapper.map_to_model(widget, { name: nil })
 
     assert_equal ['name'], mapper.errors.keys
+    assert_equal 'Bolt', widget.name
+  end
+
+  # A blank string is turned into nothing before it is written, so a form posting every field — the
+  # untouched ones as "" — does not block a caller's whole update on the fields they may not set.
+  def test_blank_value_that_writes_nothing_is_not_weighed
+    widget = Widget.new(name: 'Bolt')
+    mapper = AuthzWidgetMapper.map_to_model(widget, { name: '', quantity: 1 }, allowed: [])
+
+    assert_predicate mapper, :valid?
+    assert_equal 'Bolt', widget.name
   end
 
   # A refused field is not evaluated at all: an invalid value behind it surfaces as the refusal,
@@ -577,6 +648,65 @@ class TestAuthorize < Minitest::Test
     assert_nil widget.name
   end
 
+  def test_a_refused_default_is_refused_when_the_field_is_absent
+    widget = Widget.new
+    mapper = AuthzGuardedDefaultMapper.map_to_model(widget, {})
+
+    assert_equal ['status'], mapper.errors.keys
+    assert_nil widget.status
+  end
+
+  # The rule lets nil through, but nil is not what lands: the default does.
+  def test_an_explicit_null_cannot_smuggle_a_refused_default
+    widget = Widget.new
+    mapper = AuthzGuardedDefaultMapper.map_to_model(widget, { status: nil })
+
+    assert_equal ['status'], mapper.errors.keys
+    assert_nil widget.status
+  end
+
+  def test_a_blank_value_cannot_smuggle_a_refused_default
+    widget = Widget.new
+    mapper = AuthzGuardedDefaultMapper.map_to_model(widget, { status: '' })
+
+    assert_equal ['status'], mapper.errors.keys
+    assert_nil widget.status
+  end
+
+  # `default_on_invalid` swaps an invalid value for the default after the rule weighed the sent one.
+  def test_an_invalid_value_cannot_smuggle_a_refused_default
+    widget = Widget.new
+    mapper = AuthzGuardedDefaultMapper.map_to_model(widget, { status: 'bogus' })
+
+    assert_equal ['status'], mapper.errors.keys
+    assert_nil widget.status
+  end
+
+  def test_an_authorized_value_still_lands
+    widget = Widget.new
+    mapper = AuthzGuardedDefaultMapper.map_to_model(widget, { status: 'user' })
+
+    assert_predicate mapper, :valid?
+    assert_equal 'user', widget.status
+  end
+
+  # An exempted default lands whichever way the payload leads to it — null as much as absence.
+  def test_an_exempted_default_is_applied_on_an_explicit_null
+    widget = Widget.new
+    mapper = AuthzExemptDefaultMapper.map_to_model(widget, { name: nil })
+
+    assert_predicate mapper, :valid?
+    assert_equal 'from-mapper', widget.name
+  end
+
+  def test_an_exempted_default_is_applied_on_a_blank_value
+    widget = Widget.new
+    mapper = AuthzExemptDefaultMapper.map_to_model(widget, { name: '' })
+
+    assert_predicate mapper, :valid?
+    assert_equal 'from-mapper', widget.name
+  end
+
   # --- Payload shapes ----------------------------------------------------------------------
 
   # The shape every controller actually hands a mapper. The rule is declared with symbols, the
@@ -674,6 +804,27 @@ class TestAuthorize < Minitest::Test
         map_model { attribute :name, authorize: ->(_a, _b, _c, _d) { true } }
       end
     end
+  end
+
+  # A required keyword is never passed: the rule would raise on every request.
+  def test_a_rule_demanding_a_keyword_is_refused_at_declaration
+    assert_raises(ModelMapper::ConfigurationError) do
+      Class.new do
+        include ModelMapper
+        map_model { attribute :name, authorize: ->(_target, key:) { key } }
+      end
+    end
+  end
+
+  # A plain proc tolerates missing arguments, so extra block parameters are simply left nil.
+  def test_a_proc_with_extra_parameters_is_accepted
+    mapper_class = Class.new do
+      include ModelMapper
+      map_model { attribute :name, authorize: proc { |_target, _source, value, extra| extra.nil? && value == 'Bolt' } }
+    end
+
+    assert_predicate mapper_class.map_to_model(Widget.new, { name: 'Bolt' }), :valid?
+    assert_equal ['name'], mapper_class.map_to_model(Widget.new, { name: 'Screw' }).errors.keys
   end
 
   # The keyword is applied after the block, so accepting both would silently drop the rule and leave
@@ -796,6 +947,20 @@ class TestAuthorize < Minitest::Test
 
     assert_equal ['parts'], mapper.errors.keys
     assert_empty widget.parts
+  end
+
+  # An empty list builds zero records: nothing is written, so nothing is refused.
+  def test_empty_sub_mapper_collection_is_not_refused
+    mapper = AuthzUpsertMapper.map_to_model(Widget.new, { parts: [] })
+
+    assert_predicate mapper, :valid?
+  end
+
+  def test_a_raising_association_rule_is_collected_not_escaped
+    mapper = AuthzTrippingAssociationMapper.map_to_model(Widget.new, { quantity: 'abc', manual: { title: 'Guide' } })
+
+    assert_includes mapper.errors.keys, 'quantity'
+    assert_includes mapper.errors.keys, 'manual'
   end
 
   def test_absent_association_section_is_not_refused

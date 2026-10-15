@@ -21,13 +21,16 @@ happened, which is what makes it unfit to carry an authorization. The new error 
 `InvalidValueError`, so it travels through `#errors` / `ValidationError#fields` untouched while
 staying recognizable by class.
 
-The rule is weighed only when a value would actually land on the record — the payload carries the
-field (an explicit `null` counts), or a `default` supplies one — and it is handed that value, so it
-can depend on what is being written and not only on which field. A `default` that resolves to
-nothing is not weighed, and `default …, authorize: false` exempts one whose value is the mapper's
-own doing rather than the caller's. The rule runs before any validation, so a refused field is never
-evaluated, and it applies to associations in reference mode and through a sub-mapper alike — a
-refused association builds nothing.
+The rule is weighed only when a value would actually land on the record — the payload carries a
+non-blank value, an explicit `null` clears the field (`nullable true`), or a `default` lands (key
+absent, `null`, blank, or invalid under `default_on_invalid`) — and it is handed that value, so it
+can depend on what is being written and not only on which field. A blank value or a `null` that
+writes nothing, a `default` that resolves to nothing and an empty sub-mapper list are not weighed,
+and `default …, authorize: false` exempts a default whose value is the mapper's own doing rather
+than the caller's. A sent value is weighed before any validation, so a refused field is never
+evaluated; a default or a clearing is weighed once validation has resolved it. The rule applies to
+associations in reference mode and through a sub-mapper alike — a refused association builds
+nothing.
 
 ### Added
 
