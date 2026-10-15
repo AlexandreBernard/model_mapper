@@ -18,6 +18,11 @@ by position — and a list or section identifier (`{ category: { id: [1] } }`,
 `{ category: { id: { value: 1 } } }`) reached `find_by` as-is, silently matching one element or
 raising a database error. All three are now refused on the id path as an `InvalidValueError`.
 
+`type :integer` and `type :float` raised `ArgumentError` on an invalidly encoded string (`"\xFF"`,
+which `JSON.parse` lets through): `strip` ran before the format check. The error escaped the mapper
+and `default_on_invalid` could not catch it. Such a string is now an `InvalidFormatError` like any
+other malformed number, and `default_on_invalid` falls back on it.
+
 ## 0.4.1
 
 ### Added — unified `association`

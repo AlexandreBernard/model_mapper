@@ -969,6 +969,13 @@ class TestModelMapper < Minitest::Test
     assert_kind_of ModelMapper::InvalidFormatError, error.first_error
   end
 
+  def test_float_rejects_invalid_utf8_string
+    widget = Widget.new
+    service = FloatService.new(widget, { price: "\xFF".dup.force_encoding('UTF-8') })
+    error = assert_raises(ModelMapper::ValidationError) { service.call }
+    assert_kind_of ModelMapper::InvalidFormatError, error.first_error
+  end
+
   # Integer type
 
   def test_integer_converts_valid_string
@@ -988,6 +995,13 @@ class TestModelMapper < Minitest::Test
   def test_integer_rejects_non_numeric
     widget = Widget.new
     service = IntegerService.new(widget, { quantity: 'abc' })
+    error = assert_raises(ModelMapper::ValidationError) { service.call }
+    assert_kind_of ModelMapper::InvalidFormatError, error.first_error
+  end
+
+  def test_integer_rejects_invalid_utf8_string
+    widget = Widget.new
+    service = IntegerService.new(widget, { quantity: "\xFF".dup.force_encoding('UTF-8') })
     error = assert_raises(ModelMapper::ValidationError) { service.call }
     assert_kind_of ModelMapper::InvalidFormatError, error.first_error
   end
@@ -1103,6 +1117,13 @@ class TestModelMapper < Minitest::Test
   def test_default_on_invalid_falls_back
     widget = Widget.new
     service = DefaultOnInvalidService.new(widget, { quantity: 'abc' })
+    service.call
+    assert_equal 0, widget.quantity
+  end
+
+  def test_default_on_invalid_falls_back_on_invalid_utf8
+    widget = Widget.new
+    service = DefaultOnInvalidService.new(widget, { quantity: "\xFF".dup.force_encoding('UTF-8') })
     service.call
     assert_equal 0, widget.quantity
   end
