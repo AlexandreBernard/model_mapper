@@ -1060,6 +1060,14 @@ class TestModelMapper < Minitest::Test
     assert_equal [false, true], widget.flags
   end
 
+  def test_boolean_invalid_utf8_string_is_false
+    widget = Widget.new
+    flags = ["\xFF".dup.force_encoding('UTF-8'), "yes\xFF".dup.force_encoding('UTF-8')]
+    ArrayWidgetMapper.new(widget, { flags: flags }).map_to_model
+
+    assert_equal [false, false], widget.flags
+  end
+
   def test_boolean_true_values_are_pinned
     assert_equal %w[true 1 yes on t], ModelMapper::BOOLEAN_TRUE_VALUES
     assert_predicate ModelMapper::BOOLEAN_TRUE_VALUES, :frozen?

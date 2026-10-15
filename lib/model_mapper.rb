@@ -587,9 +587,10 @@ module ModelMapper
 
   # A string is true only when it is one of BOOLEAN_TRUE_VALUES ("no", "f", "banana" are false); any
   # other object is cast by Ruby truthiness (0 is true). Deliberately independent of any `to_bool` or
-  # `ActiveModel::Type::Boolean` the host app provides, whose rules differ.
+  # `ActiveModel::Type::Boolean` the host app provides, whose rules differ. `scrub` first: strip and
+  # downcase raise on an invalidly encoded string, which is just another string that is not true.
   def valid_boolean_value?(value, _param_config, _source_params, _target_object)
-    return BOOLEAN_TRUE_VALUES.include?(value.strip.downcase) if value.is_a?(String)
+    return BOOLEAN_TRUE_VALUES.include?(value.scrub.strip.downcase) if value.is_a?(String)
 
     !!value
   end

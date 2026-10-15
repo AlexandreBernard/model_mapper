@@ -365,10 +365,14 @@ end
 ### `:boolean`
 
 A string is `true` when, stripped and downcased, it is one of `true`, `1`, `yes`, `on`, `t`
-(`ModelMapper::BOOLEAN_TRUE_VALUES`); every other string — `"false"`, `"no"`, `"f"`, `""`, `"banana"`
-— is `false`. Any other value is cast by Ruby truthiness: `nil` and `false` are `false`, everything
-else (including `0`) is `true`. The conversion is the gem's own: the host app needs no `to_bool`, and
-one it defines is not used.
+(`ModelMapper::BOOLEAN_TRUE_VALUES`); every other string — `"false"`, `"no"`, `"f"`, `"banana"` — is
+`false`. Any other value is cast by Ruby truthiness: `false` is `false`, everything else (including
+`0`) is `true`. The conversion is the gem's own: the host app needs no `to_bool`, and one it defines
+is not used.
+
+As for every type, an empty value (`nil`, `""`, `[]`, `{}`) never reaches the cast on an attribute:
+it is treated as absent (`nil`, or `InvalidNilValueError` when required). Inside a `type :array` +
+`of :boolean`, each element is cast as is, so `nil` and `""` become `false`.
 
 ```ruby
 attribute :active do

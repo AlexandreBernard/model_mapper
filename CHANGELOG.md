@@ -6,10 +6,11 @@
 
 `type :boolean` called `value.to_bool`, a method the gem never defined: a host app without it raised
 `NoMethodError`, and a host app with its own got its rules instead of the gem's. A host whose
-`to_bool` casts through `ActiveModel::Type::Boolean` read `"no"`, `"FALSE"` or `"banana"` as `true`
+`to_bool` casts through `ActiveModel::Type::Boolean` read `"no"`, `"False"` or `"banana"` as `true`
 and `0` as `false`. The gem now casts on its own: a string is `true` only when it is one of `true`,
-`1`, `yes`, `on`, `t` (case and surrounding spaces ignored), any other string is `false`, and any
-other value follows Ruby truthiness.
+`1`, `yes`, `on`, `t` (case and surrounding spaces ignored), any other non-empty string — invalidly
+encoded ones included — is `false`, and any other value follows Ruby truthiness. An empty attribute
+value (`nil`, `""`, `[]`, `{}`) is still treated as absent, before any cast.
 
 An `association` in reference mode read its identifier with `element[identifier]` and handed the
 result straight to `find_by`. A list section (`{ category: [1] }`) raised `TypeError` — a list digs
