@@ -22,10 +22,10 @@ happened, which is what makes it unfit to carry an authorization. The new error 
 staying recognizable by class.
 
 The rule is weighed only when a value would actually land on the record — the payload carries a
-non-blank value, an explicit `null` clears the field (`nullable true`), or a `default` lands (key
-absent, `null`, blank, or invalid under `default_on_invalid`) — and it is handed that value, so it
-can depend on what is being written and not only on which field. A blank value or a `null` that
-writes nothing, a `default` that resolves to nothing and an empty sub-mapper list are not weighed,
+non-blank value, a clearing request (`null`, or `[]` on a multi-valued param) clears the field
+(`nullable true`), or a `default` lands (key absent, `null`, blank, or invalid under
+`default_on_invalid`) — and it is handed that value, so it can depend on what is being written and
+not only on which field. A blank value or a clearing request that writes nothing, a `default` that resolves to nothing and an empty sub-mapper list are not weighed,
 and `default …, authorize: false` exempts a default whose value is the mapper's own doing rather
 than the caller's. A sent value is weighed before any validation, so a refused field is never
 evaluated; a default or a clearing is weighed once validation has resolved it. The rule applies to
@@ -35,9 +35,11 @@ nothing.
 ### Added
 
 `nullable` on `attribute` and on a reference `association` (block method or `nullable:` keyword) says
-what a key sent with an explicit `null` does: `nullable true` clears the value (`nil`, or `[]` for a
-collection), `nullable false` refuses it with an `InvalidNilValueError` while the key stays optional.
-An absent key is never affected, `required` still wins, and `""`/`[]`/`{}` are not nulls. A value
+what a clearing request does — a key sent with an explicit `null`, or with an empty list on a
+multi-valued param (`many: true`, `type :array`), which is what a client sends once it has removed
+every element: `nullable true` clears the value (`nil`, or `[]` for a collection), `nullable false`
+refuses it with an `InvalidNilValueError` while the key stays optional. An absent key is never
+affected, `required` still wins, and `""`, `{}` and `[]` on a scalar param are not clearing requests. A value
 other than `true`/`false` (`nil` leaves it undeclared), or `nullable` on a param mapped by a
 sub-mapper, raises `ConfigurationError`. See issue #6.
 
@@ -68,8 +70,8 @@ raises `TypeError`.
 
 ### Deprecated
 
-An explicit `null` on a param without `nullable` is still treated like an absent key (skipped, or
-replaced by its `default`), but now warns — once per mapper class and param, not for a validation-only
+An explicit `null`, or an empty list on a multi-valued param, on a param without `nullable` is still
+treated like an absent key (skipped, or replaced by its `default`), but now warns — once per mapper class and param, not for a validation-only
 param — because a future release will clear the value instead. Declare
 `nullable true` or `nullable false` to choose the behaviour now and silence the warning.
 

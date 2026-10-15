@@ -19,8 +19,9 @@ class NullManualMapper
 
 end
 
-# An explicit null (key present, raw value nil) on an undeclared param is still skipped but warned
-# about; `nullable true` clears the value now, `nullable false` refuses the null.
+# A clearing request — an explicit null (key present, raw value nil), or an empty list on a
+# multi-valued param — on an undeclared param is still skipped but warned about; `nullable true`
+# clears the value now, `nullable false` refuses it.
 class TestExplicitNull < Minitest::Test
 
   def setup
@@ -143,7 +144,7 @@ class TestExplicitNull < Minitest::Test
       end
     end
 
-    [{}, { name: '' }, { numbers: [] }, { category: {} }].each do |payload|
+    [{}, { name: '' }, { name: [] }, { numbers: [''] }, { category: {} }].each do |payload|
       assert_output(nil, '') { klass.map_to_model(Widget.new, payload) }
     end
   end
@@ -243,7 +244,7 @@ class TestExplicitNull < Minitest::Test
     assert_output(nil, '') { klass.map_to_model(Widget.new, { name: nil }) }
   end
 
-  def test_sub_mapper_association_null_is_skipped_without_warning
+  def test_sub_mapper_association_null_or_empty_list_is_skipped_without_warning
     klass = mapper do
       association :parts_attributes, many: true do
         from :parts
@@ -251,7 +252,9 @@ class TestExplicitNull < Minitest::Test
       end
     end
 
-    assert_output(nil, '') { klass.map_to_model(Widget.new, { parts: nil }) }
+    [{ parts: nil }, { parts: [] }].each do |payload|
+      assert_output(nil, '') { klass.map_to_model(Widget.new, payload) }
+    end
   end
 
   # --- nullable true: clears now ---
@@ -409,6 +412,123 @@ class TestExplicitNull < Minitest::Test
     end
     assert_equal ['info.status'], error.fields
     assert_kind_of ModelMapper::InvalidNilValueError, error.errors['info.status']
+  end
+
+  # --- an empty list on a multi-valued param: a clearing request, governed like a null ---
+  # It is what a client sends once it has removed every element (`JSON.stringify({ parts: [] })`).
+
+  def numbers_mapper(**options, &extra)
+    mapper do
+      attribute :numbers, **options do
+        type :array
+        of :integer
+        instance_exec(&extra) if extra
+      end
+    end
+  end
+
+  def test_undeclared_empty_list_keeps_the_value_and_warns
+    widget = Widget.new(numbers: [1, 2])
+
+    assert_output(nil, /`numbers` received an empty list, which is treated like an absent key/) do
+      numbers_mapper.map_to_model!(widget, { numbers: [] })
+    end
+    assert_equal [1, 2], widget.numbers
+  end
+
+  def test_undeclared_empty_list_with_default_applies_the_default_and_warns
+    widget = Widget.new(numbers: [1, 2])
+
+    assert_output(nil, /empty list/) { numbers_mapper { default [9] }.map_to_model!(widget, { numbers: [] }) }
+    assert_equal [9], widget.numbers
+  end
+
+  def test_undeclared_empty_list_on_a_many_reference_keeps_the_children_and_warns
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+      end
+    end
+    widget = Widget.create!
+    part = Part.create!(name: 'p', widget:)
+
+    assert_output(nil, /`parts` received an empty list/) do
+      assert_predicate klass.map_to_model(widget, { parts: [] }), :valid?
+    end
+    assert_equal widget.id, part.reload.widget_id
+  end
+
+  # One declaration answers both spellings, so the param warns once whichever comes first.
+  def test_a_null_and_an_empty_list_warn_once_per_param
+    klass = numbers_mapper
+
+    assert_output(nil, /explicit null/) { klass.map_to_model(Widget.new, { numbers: nil }) }
+    assert_output(nil, '') { klass.map_to_model(Widget.new, { numbers: [] }) }
+  end
+
+  def test_nullable_true_empties_an_array_of_scalars_on_an_empty_list
+    widget = Widget.new(numbers: [1, 2])
+
+    assert_output(nil, '') { numbers_mapper(nullable: true).map_to_model!(widget, { numbers: [] }) }
+    assert_equal [], widget.numbers
+  end
+
+  def test_nullable_true_empty_list_does_not_apply_the_default
+    widget = Widget.new(numbers: [1, 2])
+
+    numbers_mapper(nullable: true) { default [9] }.map_to_model!(widget, { numbers: [] })
+    assert_equal [], widget.numbers
+  end
+
+  # Same known limitation as the null (issue #13): the previous children are detached at once.
+  def test_nullable_true_empties_a_many_reference_on_an_empty_list
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        nullable true
+      end
+    end
+    widget = Widget.create!
+    part = Part.create!(name: 'p', widget:)
+
+    assert_predicate klass.map_to_model(widget, { parts: [] }), :valid?
+    assert_equal [], widget.parts.to_a
+    assert_nil part.reload.widget_id
+  end
+
+  def test_nullable_false_refuses_an_empty_list
+    widget = Widget.new(numbers: [1, 2])
+
+    error = nil
+    assert_output(nil, '') do
+      error = assert_raises(ModelMapper::ValidationError) do
+        numbers_mapper(nullable: false).map_to_model!(widget, { numbers: [] })
+      end
+    end
+    assert_equal ['numbers'], error.fields
+    assert_kind_of ModelMapper::InvalidNilValueError, error.errors['numbers']
+    assert_equal [1, 2], widget.numbers
+  end
+
+  def test_required_empty_list_raises_without_warning
+    error = nil
+    assert_output(nil, '') do
+      error = assert_raises(ModelMapper::ValidationError) do
+        numbers_mapper(nullable: true) { required true }.map_to_model!(Widget.new, { numbers: [] })
+      end
+    end
+    assert_kind_of ModelMapper::InvalidNilValueError, error.errors['numbers']
+  end
+
+  # On a scalar, an empty list names no value to clear: it says nothing, whatever `nullable` says.
+  def test_empty_list_on_a_scalar_param_is_not_a_clearing_request
+    [nil, true, false].each do |nullable|
+      klass = mapper { attribute :name, nullable: }
+      widget = Widget.new(name: 'kept')
+
+      assert_output(nil, '') { klass.map_to_model!(widget, { name: [] }) }
+      assert_equal 'kept', widget.name
+    end
   end
 
   # --- inheritance ---

@@ -2,6 +2,13 @@
 
 Status: design · Related: issue #6, PR #7
 
+> **Amended (2026-10-15):** PR #7 settled that an empty list on a multi-valued param (`many: true`,
+> `type :array`) is a clearing request too, like a null. The deprecation release now treats it the
+> same way — warned when undeclared, cleared by `nullable true`, refused by `nullable false` — so an
+> app that declares `nullable` before PR #7 lands sees no change when it does. Where this document
+> says `[]` is left for PR #7 to decide, read it as decided. `""`, `{}` and `[]` on a scalar param are
+> still not clearing requests.
+
 ## Problem
 
 A mapper cannot tell an absent key from a key sent with `null`: `validate_param` reads

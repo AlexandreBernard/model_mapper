@@ -425,6 +425,27 @@ class AuthzNullableMapper
 
 end
 
+# An empty list on a multi-valued param is a clearing request, like a null.
+class AuthzListMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :numbers do
+      type :array
+      of :integer
+      authorize -> { false }
+    end
+    attribute :codes do
+      type :array
+      of :string
+      nullable true
+      authorize -> { false }
+    end
+  end
+
+end
+
 # A rule that raises on an association, after an earlier field already failed.
 class AuthzTrippingAssociationMapper
 
@@ -497,6 +518,25 @@ class TestAuthorize < Minitest::Test
 
     assert_equal ['name'], mapper.errors.keys
     assert_equal 'Bolt', widget.name
+  end
+
+  # Without `nullable true`, an empty list writes nothing either: there is no write to refuse.
+  def test_empty_list_that_writes_nothing_is_not_weighed
+    widget = Widget.new(numbers: [1])
+    mapper = nil
+    capture_io { mapper = AuthzListMapper.map_to_model(widget, { numbers: [] }) }
+
+    assert_predicate mapper, :valid?
+    assert_equal [1], widget.numbers
+  end
+
+  # With `nullable true`, an empty list clears the field: the caller's write, weighed like a null.
+  def test_empty_list_that_clears_is_weighed
+    widget = Widget.new(codes: ['a'])
+    mapper = AuthzListMapper.map_to_model(widget, { codes: [] })
+
+    assert_equal ['codes'], mapper.errors.keys
+    assert_equal ['a'], widget.codes
   end
 
   # A blank string is turned into nothing before it is written, so a form posting every field — the

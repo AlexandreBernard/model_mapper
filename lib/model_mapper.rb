@@ -66,21 +66,24 @@ module ModelMapper
   EXPLICIT_NULL_WARNINGS_LOCK = Mutex.new
   private_constant :EXPLICIT_NULL_WARNINGS, :EXPLICIT_NULL_WARNINGS_LOCK
 
-  # Deprecation: an explicit null on a param that does not declare `nullable` is still treated like an
-  # absent key, but a future release clears the value instead. Warned at most once per (mapper class,
-  # param) per process — the same endpoint receives the same null on every request. Keyed by the class's
-  # object_id rather than the class itself, so a warned anonymous mapper can still be garbage-collected
-  # (a reused id can at worst hide one warning), and two live anonymous mappers never share an entry.
-  def self.warn_explicit_null_once(mapper_class, param_name, keys)
+  # Deprecation: a clearing request — an explicit null, or an empty list on a multi-valued param — on a
+  # param that does not declare `nullable` is still treated like an absent key, but a future release
+  # clears the value instead. Warned at most once per (mapper class, param) per process, whichever
+  # spelling comes first, since one declaration answers both — the same endpoint receives the same
+  # payload on every request. Keyed by the class's object_id rather than the class itself, so a warned
+  # anonymous mapper can still be garbage-collected (a reused id can at worst hide one warning), and
+  # two live anonymous mappers never share an entry.
+  def self.warn_explicit_null_once(mapper_class, param_name, keys, empty_list: false)
     key = [mapper_class.object_id, param_name]
     return unless EXPLICIT_NULL_WARNINGS_LOCK.synchronize { EXPLICIT_NULL_WARNINGS.add?(key) }
 
     path = keys.join('.')
     sent_as = path == param_name.to_s ? '' : " (sent as `#{path}`)"
-    warn "[ModelMapper] #{mapper_class.name || mapper_class.inspect}: `#{param_name}`#{sent_as} received an " \
-         'explicit null, which is treated like an absent key (skipped, or replaced by its `default`); a future ' \
+    received, it = empty_list ? ['an empty list', 'it'] : ['an explicit null', 'the null']
+    warn "[ModelMapper] #{mapper_class.name || mapper_class.inspect}: `#{param_name}`#{sent_as} received " \
+         "#{received}, which is treated like an absent key (skipped, or replaced by its `default`); a future " \
          'release will clear the value instead. Declare `nullable true` to clear it now, or `nullable false` ' \
-         'to reject the null.'
+         "to reject #{it}."
   end
 
   # Forget which explicit-null deprecations were already emitted (tests).
@@ -284,13 +287,11 @@ module ModelMapper
           next
         end
 
-        # An explicit null (key present, raw value nil) on an optional param: `nullable` decides. A
-        # required param keeps refusing it in validate_param, whatever `nullable` says. Read off the
-        # same `read_path` as the value, so a key that sets a value is the key that clears it; a nil or
-        # empty parent section and blank values ("", [], {}) are not explicit nulls.
+        # A clearing request on an optional param: `nullable` decides. A required param keeps refusing
+        # it in validate_param, whatever `nullable` says. See `clearing_request?`.
         cleared = false
         default_holder = nil
-        if allow_nil && present && raw_value.nil?
+        if allow_nil && clearing_request?(param_config, present, raw_value)
           case param_config.nullable_value
           when true
             cleared = true
@@ -299,7 +300,10 @@ module ModelMapper
             raise ModelMapper::InvalidNilValueError.new(param_config.keys.join('.'))
           else
             # A validation-only param assigns nothing, so clearing it changes nothing worth warning about.
-            ModelMapper.warn_explicit_null_once(self.class, param_name, param_config.keys) if param_config.assign?
+            if param_config.assign?
+              ModelMapper.warn_explicit_null_once(self.class, param_name, param_config.keys,
+                                                  empty_list: !raw_value.nil?)
+            end
           end
         end
         value, default_holder = validate_param(param_config, raw_value, source_params, target_object, allow_nil) unless cleared
@@ -972,6 +976,18 @@ module ModelMapper
     else
       param_config.allowing_value
     end
+  end
+
+  # Whether the payload asks for this param to be CLEARED: its key is present carrying a null, or —
+  # on a multi-valued param — an empty list, which is what a client sends once it has removed every
+  # element (`JSON.stringify({ parts: [] })`). Works off the same `read_path` as the value, so a key
+  # that sets a value is the key that clears it. An absent key, a nil or empty parent section and the
+  # other blank values ("", {}, or [] on a scalar, which names nothing to clear) are not.
+  def clearing_request?(param_config, present, raw_value)
+    return false unless present
+    return true if raw_value.nil?
+
+    param_config.collection? && raw_value.is_a?(Array) && raw_value.empty?
   end
 
   # The single read of a `from` path in the payload: [present, raw value]. Every level is read with
