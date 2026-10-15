@@ -25,12 +25,12 @@ The rule is weighed only when a value would actually land on the record — the 
 non-blank value, a clearing request (`null`, or `[]` on a multi-valued param) clears the field
 (`nullable true`), or a `default` lands (key absent, `null`, blank, or invalid under
 `default_on_invalid`) — and it is handed that value, so it can depend on what is being written and
-not only on which field. A blank value or a clearing request that writes nothing, a `default` that resolves to nothing and an empty sub-mapper list are not weighed,
-and `default …, authorize: false` exempts a default whose value is the mapper's own doing rather
-than the caller's. A sent value is weighed before any validation, so a refused field is never
-evaluated; a default or a clearing is weighed once validation has resolved it. The rule applies to
-associations in reference mode and through a sub-mapper alike — a refused association builds
-nothing.
+not only on which field. A blank value or a clearing request that writes nothing, a `default` that
+resolves to nothing and an empty sub-mapper list are not weighed, and `default …, authorize: false`
+exempts a default whose value is the mapper's own doing rather than the caller's. A sent value is
+weighed before any validation, so a refused field is never evaluated; a default or a clearing is
+weighed once validation has resolved it. The rule applies to associations in reference mode and
+through a sub-mapper alike — a refused association builds nothing.
 
 ### Added
 
@@ -71,9 +71,10 @@ raises `TypeError`.
 ### Deprecated
 
 An explicit `null`, or an empty list on a multi-valued param, on a param without `nullable` is still
-treated like an absent key (skipped, or replaced by its `default`), but now warns — once per mapper class and param, not for a validation-only
-param — because a future release will clear the value instead. Declare
-`nullable true` or `nullable false` to choose the behaviour now and silence the warning.
+treated like an absent key (skipped, or replaced by its `default`), but now warns — once per mapper
+class and param, not for a validation-only param — because a future release will clear the value
+instead. Declare `nullable true` or `nullable false` to choose the behaviour now and silence the
+warning.
 
 ### Fixed
 
