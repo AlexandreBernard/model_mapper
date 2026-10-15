@@ -245,7 +245,6 @@ class TestParamConfig < Minitest::Test
     assert_equal false, @config.merge!(ModelMapper::ParamConfig.new(:street_id)).nullable_value
   end
 
-
   # #immediate_write
 
   def test_immediate_write_is_undeclared_by_default
