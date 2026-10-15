@@ -174,19 +174,22 @@ module ModelMapper
             'is never cleared by a null'
     end
 
-    # `immediate_write` governs only the writer of a reference `association` (`allowing` without `with`):
-    # anywhere else nothing would read it, so declaring it is refused rather than accepted and ignored.
+    # `immediate_write` governs the association writers ActiveRecord applies at once: a reference
+    # `association` (`allowing` without `with`), or an attribute named like a collection's ids writer
+    # (`part_ids`, whether the model has that collection is only known at map time). Anywhere else nothing
+    # would read it, so declaring it is refused rather than accepted and ignored.
     def validate_immediate_write_param!(param_config)
       unless [nil, true, false].include?(param_config.immediate_write_value)
         raise ModelMapper::ConfigurationError,
               "`immediate_write` takes true or false (`#{param_config.name}`: " \
               "#{param_config.immediate_write_value.inspect})"
       end
-      return if param_config.reference? || param_config.immediate_write_value.nil?
+      return if param_config.immediate_write_value.nil? || param_config.reference?
+      return if !param_config.mapper? && param_config.name.to_s.end_with?('_ids')
 
       raise ModelMapper::ConfigurationError,
             "`immediate_write` does not apply to `#{param_config.name}`: it only governs a reference " \
-            '`association` (`allowing` without `with`)'
+            '`association` (`allowing` without `with`) or an `attribute` named `<collection>_ids`'
     end
 
     # `type :array` must declare exactly one element strategy: `mapper` (array of records) or `of`

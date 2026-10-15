@@ -575,6 +575,124 @@ class TestImmediateWrite < Minitest::Test
     assert_equal widget.id, part.reload.widget_id
   end
 
+  # --- an attribute assigned to a collection's ids writer (`part_ids=`) writes the same way ---
+
+  def ids_mapper(immediate_write = :undeclared, &declaration)
+    declaration ||= proc { type :array; of :integer }
+    mapper do
+      attribute :part_ids do
+        instance_eval(&declaration)
+        immediate_write(immediate_write) unless immediate_write == :undeclared
+      end
+      attribute :price do type :float end
+    end
+  end
+
+  def test_undeclared_ids_replace_writes_and_warns
+    widget = Widget.create!
+    old = Part.create!(name: 'a', widget:)
+    new = Part.create!(name: 'b')
+
+    assert_output(nil, WRITE_WARNING) { ids_mapper.map_to_model(widget, { part_ids: [new.id] }) }
+    assert_nil old.reload.widget_id
+    assert_equal widget.id, new.reload.widget_id
+  end
+
+  def test_false_refuses_an_ids_replace_whatever_the_declaration
+    declarations = {
+      'of :integer' => proc { type :array; of :integer },
+      'untyped' => proc {},
+      'of :referential' => proc { type :array; of :referential; allowing -> { Part.all } }
+    }
+    declarations.each do |label, declaration|
+      Part.delete_all
+      widget = Widget.create!
+      old = Part.create!(name: 'a', widget:)
+      new = Part.create!(name: 'b')
+
+      result = nil
+      capture_io { result = ids_mapper(false, &declaration).map_to_model(widget, { part_ids: [new.id], price: 'abc' }) }
+      assert_equal %w[part_ids price], result.errors.keys.sort, label
+      assert_equal refusal, result.errors['part_ids'].details, label
+      assert_equal widget.id, old.reload.widget_id, label
+      assert_nil new.reload.widget_id, label
+    end
+  end
+
+  # `[]` is skipped like an absent key and assigns nothing; emptying takes `nullable true` and a null.
+  def test_false_refuses_emptying_through_ids
+    widget = Widget.create!
+    part = Part.create!(name: 'a', widget:)
+
+    assert ids_mapper(false).map_to_model(widget, { part_ids: [] }).valid?
+    clearing = ids_mapper(false) do
+      type :array
+      of :integer
+      nullable true
+    end
+    assert_equal ['part_ids'], clearing.map_to_model(widget, { part_ids: nil }).errors.keys
+    assert_equal widget.id, part.reload.widget_id
+  end
+
+  def test_false_refuses_a_habtm_ids_replace
+    klass = mapper do
+      attribute :iw_tag_ids do
+        type :array
+        of :integer
+        immediate_write false
+      end
+    end
+    widget = IwTaggedWidget.create!
+    tag = IwTag.create!(name: 't')
+
+    assert_equal ['iw_tag_ids'], klass.map_to_model(widget, { iw_tag_ids: [tag.id] }).errors.keys
+    assert_equal 0, IwTag.connection.select_value('SELECT COUNT(*) FROM iw_tags_widgets')
+  end
+
+  # The ids writer casts ids to the key type and drops blanks, so these are the current set.
+  def test_same_ids_as_strings_in_another_order_with_blanks_are_accepted
+    widget = Widget.create!
+    a = Part.create!(name: 'a', widget:)
+    b = Part.create!(name: 'b', widget:)
+
+    assert_output(nil, '') do
+      assert ids_mapper(false) {}.map_to_model(widget, { part_ids: [b.id.to_s, '', a.id.to_s, nil] }).valid?
+    end
+    assert_equal widget.id, a.reload.widget_id
+  end
+
+  def test_ids_on_a_new_parent_are_assigned_in_memory
+    part = Part.create!(name: 'p')
+    widget = Widget.new
+
+    assert_output(nil, '') { assert ids_mapper(false).map_to_model(widget, { part_ids: [part.id] }).valid? }
+    assert_nil part.reload.widget_id
+    assert_equal [part], widget.parts.to_a
+  end
+
+  def test_true_writes_ids_without_warning
+    widget = Widget.create!
+    part = Part.create!(name: 'p')
+
+    assert_output(nil, '') { assert ids_mapper(true).map_to_model(widget, { part_ids: [part.id] }).valid? }
+    assert_equal widget.id, part.reload.widget_id
+  end
+
+  # `category_ids` is a plain accessor on Widget, not an association's ids writer: nothing to guard.
+  def test_an_ids_attribute_that_is_not_an_association_writer_is_untouched
+    klass = mapper do
+      attribute :category_ids do
+        type :array
+        of :integer
+        immediate_write false
+      end
+    end
+    widget = Widget.create!
+
+    assert_output(nil, '') { assert klass.map_to_model(widget, { category_ids: [1, 2] }).valid? }
+    assert_equal [1, 2], widget.category_ids
+  end
+
   # --- non-ActiveRecord targets ---
 
   def test_hash_and_poro_targets_are_untouched
@@ -615,6 +733,14 @@ class TestImmediateWrite < Minitest::Test
     end
 
     assert_raises(ModelMapper::ConfigurationError) { klass.map_to_model(Widget.new, {}) }
+  end
+
+  def test_accepts_it_on_an_ids_attribute
+    klass = mapper do
+      attribute :part_ids do immediate_write false end
+    end
+
+    assert klass.map_to_model(Widget.new, {}).valid?
   end
 
   def test_rejects_it_on_a_sub_mapper_association

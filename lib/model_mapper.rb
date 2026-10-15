@@ -419,15 +419,25 @@ module ModelMapper
     ModelMapper.warn_immediate_write_once(self.class, param_config.name, param_config.keys)
   end
 
-  # Whether assigning `value` to this reference makes ActiveRecord write to the database now. The
-  # comparison follows ActiveRecord's own replace: records are equal by class and id (`eql?`), so
-  # another order or a repeated id writes nothing, and an unsaved record in the current target is never
-  # written by the replace.
+  # Whether assigning `value` makes ActiveRecord write to the database now: a reference `association`
+  # assigned through its writer (`parts=`, `manual=`), or any attribute assigned through a collection's
+  # ids writer (`part_ids=`), whatever its type. The comparison follows ActiveRecord's own replace:
+  # records are equal by class and id (`eql?`), so another order or a repeated id writes nothing, and an
+  # unsaved record in the current target is never written by the replace.
   def immediate_write?(target, param_config, value)
-    return false unless param_config.reference?
     return false unless target.respond_to?(:persisted?) && target.persisted?
     return false unless target.class.respond_to?(:reflect_on_association)
 
+    if param_config.reference?
+      reference_write?(target, param_config, value)
+    elsif (reflection = ids_writer_reflection(target.class, param_config.name))
+      ids_write?(target, reflection, value)
+    else
+      false
+    end
+  end
+
+  def reference_write?(target, param_config, value)
     reflection = target.class.reflect_on_association(param_config.name)
     return false if reflection.nil? || reflection.macro == :belongs_to
 
@@ -437,6 +447,27 @@ module ModelMapper
     else
       current != value
     end
+  end
+
+  # The collection (has_many, :through, HABTM) whose ids writer ActiveRecord names `<singular>_ids=`.
+  def ids_writer_reflection(model, name)
+    name = name.to_s
+    return unless name.end_with?('_ids')
+
+    model.reflect_on_all_associations.find { |r| r.collection? && "#{r.name.to_s.singularize}_ids" == name }
+  end
+
+  # Mirrors ActiveRecord's ids writer, which drops blank ids, casts the others to the key type and
+  # replaces the collection with the matching records. A record element (the deprecated
+  # `of :referential` validates into records) stands for its key.
+  def ids_write?(target, reflection, value)
+    key = reflection.association_primary_key
+    key_type = reflection.klass.type_for_attribute(key)
+    ids = Array(value).map { |id| id.is_a?(ActiveRecord::Base) ? id.public_send(key) : id }
+    new_ids = ids.reject(&:blank?).to_set { |id| key_type.cast(id) }
+
+    current = current_association_records(target.association(reflection.name), reflection)
+    new_ids != current.reject(&:new_record?).to_set { |record| record.public_send(key) }
   end
 
   # The records currently associated, loaded onto the association exactly as ActiveRecord's own replace

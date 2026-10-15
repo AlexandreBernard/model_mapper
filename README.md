@@ -177,7 +177,14 @@ end
   the current one, compared as ActiveRecord does (same child; same records, in any order — an unsaved
   child already in the association does not count). A key that is absent, or a null that is skipped,
   assigns nothing and is never refused — unless a `default` fills it: a default is assigned like a sent
-  value, and is refused like one. A future release refuses by default; see
+  value, and is refused like one.
+
+  The same holds for an `attribute` assigned through a collection's **ids writer** — `part_ids` for a
+  `has_many :parts`, whatever its `type` (`of :integer`, untyped, or the deprecated `of :referential`):
+  ActiveRecord's `part_ids=` replaces the collection at once just like `parts=`. Declare
+  `immediate_write` on it the same way. The ids are compared as ActiveRecord's ids writer reads them
+  (cast to the key type, blanks dropped), and an `*_ids` attribute that is not a collection's ids
+  writer on the record (a plain accessor) is left alone. A future release refuses by default; see
   [Deprecations](#a-reference-written-during-the-map). Replace such children in the caller, after the
   map succeeded, when the write must wait for validation.
 - **Error reporting differs by mode for 1‑N** (worth knowing): a 1‑N **reference** fails fast — the
@@ -253,7 +260,7 @@ to `association` (`nullable:` and `immediate_write:` are also accepted as keywor
 | `authorize` | Proc / Bool | `nil` | May the caller **write** this field? A falsy result refuses it with an `UnauthorizedFieldError` |
 | `required` | Bool / Proc | `false` | Whether `nil`/blank raises an error |
 | `nullable` | Bool | undeclared | What a clearing request (`null`, or `[]` on a multi-valued param) does: `true` clears, `false` refuses — see below |
-| `immediate_write` | Bool | undeclared | Reference `association` only: whether a change ActiveRecord writes to the DB during the map is accepted (`true`) or refused (`false`) — see below |
+| `immediate_write` | Bool | undeclared | Reference `association`, or an `attribute` named `<collection>_ids`: whether a change ActiveRecord writes to the DB during the map is accepted (`true`) or refused (`false`) — see below |
 | `assign` | Bool | `true` | Include in `assign_attributes`; `false` = validate-only (was `save`, which now raises) |
 | `default` | value / Proc | `nil` | Fallback when the source value is `nil`/missing; `authorize: false` exempts it from `authorize` |
 | `default_on_invalid` | Bool | `false` | Use `default` when validation fails instead of raising |
@@ -801,8 +808,9 @@ hold a null. A client that sends `null` or `[]` to mean "leave it alone" should 
 
 ### A reference written during the map
 
-A reference `association` that does not declare `immediate_write` is still assigned when ActiveRecord
-writes that assignment to the database at once (a `has_one`/`has_many`/HABTM of a persisted record,
+A reference `association`, or an `attribute` assigned through a collection's ids writer (`part_ids`),
+that does not declare `immediate_write` is still assigned when ActiveRecord writes that assignment to
+the database at once (a `has_one`/`has_many`/HABTM of a persisted record,
 with a value that differs from the current one), but a future release will **refuse** it instead. Each
 such assignment emits, once per mapper class and param:
 

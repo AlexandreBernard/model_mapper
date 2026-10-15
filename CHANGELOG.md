@@ -51,8 +51,11 @@ the mapping fails (old children nullified, or deleted under a deleting `dependen
 `immediate_write true` accepts it; `immediate_write false` refuses it with an `InvalidValueError` on
 the param's path and assigns nothing. A new record, a `belongs_to`, an unchanged value (compared as
 ActiveRecord does: same records in any order), an absent key without `default` and a skipped null are
-never affected. A value other than `true`/`false`, or `immediate_write` on anything but a reference
-`association`, raises `ConfigurationError`. See issue #13.
+never affected. An `attribute` assigned through a collection's ids writer (`part_ids` for a
+`has_many :parts`, whatever its `type`, including the deprecated `of :referential`) writes the same
+way and is governed the same way; its ids are compared as ActiveRecord's ids writer reads them. A
+value other than `true`/`false`, or `immediate_write` on anything but a reference `association` or
+an `attribute` named `<collection>_ids`, raises `ConfigurationError`. See issue #13.
 
 ### Changed
 
@@ -87,8 +90,8 @@ class and param, not for a validation-only param — because a future release wi
 instead. Declare `nullable true` or `nullable false` to choose the behaviour now and silence the
 warning.
 
-A reference `association` without `immediate_write` is still assigned when ActiveRecord writes that
-assignment at once, but now warns — once per mapper class and param — because a future release will
+A reference `association`, or an `attribute` assigned through a collection's ids writer, without
+`immediate_write` is still assigned when ActiveRecord writes that assignment at once, but now warns — once per mapper class and param — because a future release will
 refuse it instead. Declare `immediate_write true` or `immediate_write false` to choose now and silence
 the warning. `ModelMapper.reset_explicit_null_warnings!` is superseded by
 `ModelMapper.reset_deprecation_warnings!`, which forgets every kind of deprecation warning; the old
