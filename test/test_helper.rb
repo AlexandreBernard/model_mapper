@@ -38,21 +38,6 @@ end
 I18n.load_path += Dir[File.join(File.expand_path('../../config/locales', __FILE__), '*.yml')]
 I18n.default_locale = :en
 
-# Minimal to_bool extension (normally provided by the host app)
-class String
-  TRUE_VALUES = %w[true 1 yes on t].freeze
-
-  def to_bool
-    TRUE_VALUES.include?(strip.downcase)
-  end
-end
-
-class Object
-  def to_bool
-    !!self
-  end
-end
-
 require 'model_mapper'
 
 # Test models
@@ -77,7 +62,7 @@ class Widget < ActiveRecord::Base
   accepts_nested_attributes_for :manual, :parts
 
   # Virtual attributes used to exercise `type :array` + `of` (arrays of scalars).
-  attr_accessor :numbers, :codes, :statuses, :anything, :category_ids
+  attr_accessor :numbers, :codes, :statuses, :anything, :flags, :category_ids
 end
 
 # Same table as Widget, but with its own ActiveRecord validations — used to

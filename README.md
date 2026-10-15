@@ -364,7 +364,11 @@ end
 
 ### `:boolean`
 
-Converts via `.to_bool` (truthy/falsy string conversion).
+A string is `true` when, stripped and downcased, it is one of `true`, `1`, `yes`, `on`, `t`
+(`ModelMapper::BOOLEAN_TRUE_VALUES`); every other string — `"false"`, `"no"`, `"f"`, `""`, `"banana"`
+— is `false`. Any other value is cast by Ruby truthiness: `nil` and `false` are `false`, everything
+else (including `0`) is `true`. The conversion is the gem's own: the host app needs no `to_bool`, and
+one it defines is not used.
 
 ```ruby
 attribute :active do

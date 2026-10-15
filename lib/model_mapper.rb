@@ -53,6 +53,10 @@ require_relative 'model_mapper/config'
 #
 module ModelMapper
 
+  # The strings `type :boolean` reads as true, compared after strip + downcase. Every other string is
+  # false.
+  BOOLEAN_TRUE_VALUES = %w[true 1 yes on t].freeze
+
   def self.root
     File.expand_path('..', __dir__)
   end
@@ -581,8 +585,13 @@ module ModelMapper
     raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'))
   end
 
+  # A string is true only when it is one of BOOLEAN_TRUE_VALUES ("no", "f", "banana" are false); any
+  # other object is cast by Ruby truthiness (0 is true). Deliberately independent of any `to_bool` or
+  # `ActiveModel::Type::Boolean` the host app provides, whose rules differ.
   def valid_boolean_value?(value, _param_config, _source_params, _target_object)
-    value.to_bool
+    return BOOLEAN_TRUE_VALUES.include?(value.strip.downcase) if value.is_a?(String)
+
+    !!value
   end
 
   def valid_string_value?(value, _param_config, _source_params, _target_object)

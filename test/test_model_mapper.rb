@@ -660,6 +660,9 @@ class ContextWidgetMapper
 
 end
 
+# A String subclass, to check `type :boolean` applies string rules to it and not truthiness.
+class BoolSubString < String; end
+
 # `type :array` + `of` (arrays of scalars), one attribute per element strategy.
 class ArrayWidgetMapper
 
@@ -685,6 +688,11 @@ class ArrayWidgetMapper
     attribute :anything do
       type :array
       of :any
+    end
+
+    attribute :flags do
+      type :array
+      of :boolean
     end
   end
 
@@ -998,6 +1006,63 @@ class TestModelMapper < Minitest::Test
     service = BooleanService.new(widget, { active: 'false' })
     service.call
     assert_equal false, widget.active
+  end
+
+  # `Widget#active` is an ActiveRecord boolean column: it re-casts what it is assigned. Only values on
+  # which the mapper and that cast disagree prove the mapper's own conversion reached the column.
+
+  def test_boolean_no_string_is_false
+    widget = Widget.new
+    BooleanService.new(widget, { active: 'no' }).call
+    assert_equal false, widget.active
+  end
+
+  def test_boolean_unknown_string_is_false
+    widget = Widget.new
+    BooleanService.new(widget, { active: 'banana' }).call
+    assert_equal false, widget.active
+  end
+
+  def test_boolean_integer_zero_is_true
+    widget = Widget.new
+    BooleanService.new(widget, { active: 0 }).call
+    assert_equal true, widget.active
+  end
+
+  # `flags` is an uncast attribute (`type :array, of :boolean`): it shows the mapper's output as is.
+
+  def test_boolean_true_tokens_ignore_case_and_surrounding_spaces
+    widget = Widget.new
+    ArrayWidgetMapper.new(widget, { flags: ['true', '1', 'yes', 'on', 't', ' True ', 'YES'] }).map_to_model
+
+    assert_equal [true] * 7, widget.flags
+  end
+
+  def test_boolean_any_other_string_is_false
+    widget = Widget.new
+    values = ['false', '0', 'no', 'off', 'f', 'FaLsE', ' false ', 'banana', '', 'none', '10', 'y', 'nope', '2']
+    ArrayWidgetMapper.new(widget, { flags: values }).map_to_model
+
+    assert_equal [false] * values.size, widget.flags
+  end
+
+  def test_boolean_non_string_uses_ruby_truthiness
+    widget = Widget.new
+    ArrayWidgetMapper.new(widget, { flags: [true, false, nil, 0, 1, :false, :no, :yes] }).map_to_model
+
+    assert_equal [true, false, false, true, true, true, true, true], widget.flags
+  end
+
+  def test_boolean_string_subclass_uses_string_rules
+    widget = Widget.new
+    ArrayWidgetMapper.new(widget, { flags: [BoolSubString.new('no'), BoolSubString.new(' YES ')] }).map_to_model
+
+    assert_equal [false, true], widget.flags
+  end
+
+  def test_boolean_true_values_are_pinned
+    assert_equal %w[true 1 yes on t], ModelMapper::BOOLEAN_TRUE_VALUES
+    assert_predicate ModelMapper::BOOLEAN_TRUE_VALUES, :frozen?
   end
 
   # Custom type
@@ -1777,6 +1842,29 @@ class TestModelMapper < Minitest::Test
     widget = Widget.new
     klass.new(widget, { info: { status: 'active' } }).map_to_model
     assert_equal 'active', widget.status
+  end
+
+end
+
+# A host app may define its own `to_bool` (Fast&Fourrière casts through ActiveModel::Type::Boolean,
+# which makes "no" true and 0 false). `type :boolean` must ignore it.
+class TestBooleanIgnoresHostToBool < Minitest::Test
+
+  def setup
+    Object.define_method(:to_bool) { !self }
+    String.define_method(:to_bool) { !%w[true 1 yes on t].include?(strip.downcase) }
+  end
+
+  def teardown
+    String.remove_method(:to_bool)
+    Object.remove_method(:to_bool)
+  end
+
+  def test_host_to_bool_is_not_used
+    widget = Widget.new
+    ArrayWidgetMapper.new(widget, { flags: ['no', 0, 'YES', nil] }).map_to_model
+
+    assert_equal [false, true, true, false], widget.flags
   end
 
 end
