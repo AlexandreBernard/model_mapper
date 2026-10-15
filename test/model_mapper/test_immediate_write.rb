@@ -127,6 +127,20 @@ class TestImmediateWrite < Minitest::Test
     assert_equal widget.id, part.reload.widget_id
   end
 
+  def test_undeclared_refuses_a_nullable_clear_of_a_one_reference
+    klass = mapper do
+      association :manual do
+        allowing -> { Manual.all }
+        nullable true
+      end
+    end
+    widget = Widget.create!
+    manual = Manual.create!(title: 'm', widget:)
+
+    assert_equal refusal, klass.map_to_model(widget, { manual: nil }).errors['manual'].details
+    assert_equal widget.id, manual.reload.widget_id
+  end
+
   def test_undeclared_error_is_keyed_on_the_params_path
     klass = mapper do
       association :parts, many: true do

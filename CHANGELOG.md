@@ -10,11 +10,12 @@ from the current one. The write happened during the map, before validity was kno
 the mapping failed: old children nullified, or deleted under a deleting `dependent`. Such an
 assignment is now refused with an `InvalidValueError` on the param's path, and nothing is assigned or
 written, unless the reference declares `immediate_write true`. A new record, a `belongs_to`, an
-unchanged value, an absent key without `default` and a skipped null are not affected. See issue #13.
+unchanged value, an absent key without `default` and a skipped null are not affected. The deprecated
+`type :array, of: :referential` onto a `*_ids` writer is not covered and still writes during the map;
+its replacement, `association …, many: true do allowing … end`, is. See issue #13.
 
-**Upgrading:** a reference that relied on writing during the map declares `immediate_write true` (the
-deprecation warning of the previous step named each one that wrote); otherwise replace the children in the
-caller after a successful map.
+**Upgrading:** a reference that relied on writing during the map declares `immediate_write true`;
+otherwise replace the children in the caller after a successful map.
 
 ### Added
 
@@ -31,10 +32,10 @@ happens when assigning it makes ActiveRecord write to the database during the ma
 a clear by `nullable true` or a `default`. That write happens before validity is known and stays when
 the mapping fails (old children nullified, or deleted under a deleting `dependent`; join rows deleted).
 `immediate_write true` accepts it; `immediate_write false`, like leaving it undeclared, refuses it
-with an `InvalidValueError` on the param's path and assigns nothing. A new record, a `belongs_to`, an unchanged value (compared as
-ActiveRecord does: same records in any order), an absent key without `default` and a skipped null are
-never affected. A value other than `true`/`false`, or `immediate_write` on anything but a reference
-`association`, raises `ConfigurationError`. See issue #13.
+with an `InvalidValueError` on the param's path and assigns nothing. A new record, a `belongs_to`, an
+unchanged value (compared as ActiveRecord does: same records in any order), an absent key without
+`default` and a skipped null are never affected. A value other than `true`/`false`, or
+`immediate_write` on anything but a reference `association`, raises `ConfigurationError`. See issue #13.
 
 ### Changed
 
@@ -69,8 +70,8 @@ param — because a future release will clear the value instead. Declare
 `nullable true` or `nullable false` to choose the behaviour now and silence the warning.
 
 `ModelMapper.reset_explicit_null_warnings!` is superseded by
-`ModelMapper.reset_deprecation_warnings!`, which forgets every kind of deprecation warning; the old
-name still works and does the same.
+`ModelMapper.reset_deprecation_warnings!`, which forgets the deprecation warnings already emitted;
+the old name still works and does the same.
 
 ### Fixed
 
