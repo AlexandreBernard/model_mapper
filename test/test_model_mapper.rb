@@ -1048,9 +1048,9 @@ class TestModelMapper < Minitest::Test
 
   def test_boolean_non_string_uses_ruby_truthiness
     widget = Widget.new
-    ArrayWidgetMapper.new(widget, { flags: [true, false, nil, 0, 1, :false, :no, :yes] }).map_to_model
+    ArrayWidgetMapper.new(widget, { flags: [true, false, nil, 0, 1, :false, :no, :yes, [], {}] }).map_to_model
 
-    assert_equal [true, false, false, true, true, true, true, true], widget.flags
+    assert_equal [true, false, false, true, true, true, true, true, true, true], widget.flags
   end
 
   def test_boolean_string_subclass_uses_string_rules
@@ -1858,13 +1858,12 @@ end
 # which makes "no" true and 0 false). `type :boolean` must ignore it.
 class TestBooleanIgnoresHostToBool < Minitest::Test
 
+  # Fast&Fourrière's own config/initializers/object.rb.
   def setup
-    Object.define_method(:to_bool) { !self }
-    String.define_method(:to_bool) { !%w[true 1 yes on t].include?(strip.downcase) }
+    Object.define_method(:to_bool) { nil? ? false : ActiveModel::Type::Boolean.new.cast(self) }
   end
 
   def teardown
-    String.remove_method(:to_bool)
     Object.remove_method(:to_bool)
   end
 
