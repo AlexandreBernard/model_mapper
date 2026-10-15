@@ -9,15 +9,19 @@ module ModelMapper
     # declare fewer; it is then called with just as many.
     RULE_ARGUMENTS = 3
 
-    # How many arguments a Proc REQUIRES. A negative arity means optional or splat parameters, and
-    # encodes the required count as -(required + 1).
+    # How many positional arguments a Proc REQUIRES. Read off `parameters` rather than `arity`, which
+    # also counts a required keyword. A plain proc requires none: it tolerates missing arguments.
     def self.required_arity(rule)
-      rule.arity.negative? ? -rule.arity - 1 : rule.arity
+      rule.parameters.count { |type, _| type == :req }
     end
 
-    # How many arguments a Proc can ACCEPT at most — unbounded with a splat.
+    # Whether a Proc requires a keyword argument — which the mapper never passes.
+    def self.requires_keyword?(rule)
+      rule.parameters.any? { |type, _| type == :keyreq }
+    end
+
+    # How many positional arguments a Proc can ACCEPT at most — unbounded with a splat.
     def self.acceptable_arity(rule)
-      return rule.arity unless rule.arity.negative?
       return Float::INFINITY if rule.parameters.any? { |type, _| type == :rest }
 
       rule.parameters.count { |type, _| %i[req opt].include?(type) }
@@ -170,12 +174,14 @@ module ModelMapper
               'a value the mapper cannot call would authorize every write'
       end
 
-      # A rule demanding more arguments than the mapper hands it would raise on every mapped
-      # request. It is a declaration mistake, so it belongs at class load, next to the shape check.
-      if value.is_a?(Proc) && self.class.required_arity(value) > RULE_ARGUMENTS
+      # A rule demanding more arguments than the mapper hands it — or a keyword it never hands — would
+      # raise on every mapped request. It is a declaration mistake, so it belongs at class load, next
+      # to the shape check.
+      if value.is_a?(Proc) &&
+         (self.class.required_arity(value) > RULE_ARGUMENTS || self.class.requires_keyword?(value))
         raise ModelMapper::ConfigurationError,
-              "attribute `#{@name}`: an `authorize` rule takes at most #{RULE_ARGUMENTS} arguments " \
-              '(target, source_params, value)'
+              "attribute `#{@name}`: an `authorize` rule takes at most #{RULE_ARGUMENTS} positional " \
+              'arguments (target, source_params, value) and no required keyword'
       end
 
       @authorize_value = value
@@ -356,8 +362,8 @@ module ModelMapper
 
     # Weigh the `authorize` rule. Same shape as {#condition_met?} — a Proc `instance_exec`ed on the
     # mapper instance (so `user`, the aliased record and the policies are in scope), or a plain
-    # boolean — with one extra argument available: the RAW payload value, for a rule that depends on
-    # what is being written and not only on which field.
+    # boolean — with one extra argument available: the value being written — the raw payload value, or the
+    # default that lands — for a rule that depends on what is written and not only on which field.
     # @return [Boolean] true when no rule is declared or the rule accepts the write
     def authorized?(target_object, source_params, service_instance, value = nil)
       return true if @authorize_value.nil?
