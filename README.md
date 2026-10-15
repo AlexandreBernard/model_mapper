@@ -270,7 +270,7 @@ association :category do
 end
 ```
 
-- `nullable` takes `true` or `false`; anything else raises `ConfigurationError`.
+- `nullable` takes `true` or `false` (`nil` leaves it undeclared); anything else raises `ConfigurationError`.
 - `required` wins: a required param refuses a null whatever `nullable` says.
 - `""`, `[]`, `{}` are not explicit nulls and keep being skipped. On a nested `from :info, :status`,
   `{ info: null }` or `{ info: {} }` is not a null for `status` either.

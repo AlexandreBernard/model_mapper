@@ -2,6 +2,15 @@
 
 require 'test_helper'
 
+# Sub-mapper local to this file, so it runs on its own.
+class IndifferentManualMapper
+
+  include ModelMapper
+
+  map_model { attribute :title }
+
+end
+
 # A plain Hash payload is read indifferently to symbol/string keys, at every level of a `from` path and
 # for a sub-mapper's section, like an ActionController::Parameters already is.
 class TestIndifferentKeys < Minitest::Test
@@ -69,7 +78,7 @@ class TestIndifferentKeys < Minitest::Test
     klass = mapper do
       association :manual_attributes do
         from :manual
-        with AssocManualMapper
+        with IndifferentManualMapper
       end
     end
     widget = Widget.new

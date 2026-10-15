@@ -14,10 +14,12 @@ contract below and cost more than they return.
 - `Config#apply_options` accepts `nullable:`.
 - `Config#finalize_association!` raises `ConfigurationError` when a sub-mapper association declares
   `nullable` (block or keyword form — `apply_options` runs before `finalize_association!`).
-- `ModelMapper.warn_explicit_null_once(mapper_class, param_name)` — module-level, Mutex-guarded Set;
-  `ModelMapper.reset_explicit_null_warnings!` for tests.
-- `ModelMapper#explicit_null?(param_config, source_params)` (private) — parent via `dig` of all keys
-  but the last, `key?` with the same key, raw value `nil`.
+- `ModelMapper.warn_explicit_null_once(mapper_class, param_name, keys)` — module-level, Mutex-guarded
+  Set keyed by `[mapper_class.object_id, param_name]`; `ModelMapper.reset_explicit_null_warnings!` for
+  tests.
+- `ModelMapper#explicit_null?(param_config, source_params)` (private) — `read_path` (the single,
+  symbol/string-indifferent read of a `from` path) answers present with a nil raw value. (Revised
+  after review; the first version used `dig` + `key?` with the exact key.)
 
 ## Steps (TDD: each test red first, then green)
 

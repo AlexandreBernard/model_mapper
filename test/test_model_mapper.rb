@@ -890,7 +890,8 @@ class TestModelMapper < Minitest::Test
   def test_dynamic_required_raises_when_lambda_true
     widget = Widget.new
     service = DynamicRequiredService.new(widget, { code: nil })
-    error = assert_raises(ModelMapper::ValidationError) { service.call }
+    error = nil
+    capture_io { error = assert_raises(ModelMapper::ValidationError) { service.call } } # `code` null warns
     assert_kind_of ModelMapper::InvalidNilValueError, error.errors['name']
   end
 

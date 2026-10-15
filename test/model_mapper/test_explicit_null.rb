@@ -2,6 +2,23 @@
 
 require 'test_helper'
 
+# Sub-mappers local to this file, so it runs on its own (named to avoid clashing with other files).
+class NullPartMapper
+
+  include ModelMapper
+
+  map_model { attribute :name }
+
+end
+
+class NullManualMapper
+
+  include ModelMapper
+
+  map_model { attribute :title }
+
+end
+
 # An explicit null (key present, raw value nil) on an undeclared param is still skipped but warned
 # about; `nullable true` clears the value now, `nullable false` refuses the null.
 class TestExplicitNull < Minitest::Test
@@ -230,7 +247,7 @@ class TestExplicitNull < Minitest::Test
     klass = mapper do
       association :parts_attributes, many: true do
         from :parts
-        with AssocPartMapper
+        with NullPartMapper
       end
     end
 
@@ -437,14 +454,14 @@ class TestExplicitNull < Minitest::Test
       assert_raises(ModelMapper::ConfigurationError) do
         mapper do
           association :manual_attributes, nullable: value do
-            with AssocManualMapper
+            with NullManualMapper
           end
         end.map_to_model(Widget.new, {})
       end
       assert_raises(ModelMapper::ConfigurationError) do
         mapper do
           association :manual_attributes do
-            with AssocManualMapper
+            with NullManualMapper
             nullable value
           end
         end.map_to_model(Widget.new, {})
@@ -467,7 +484,7 @@ class TestExplicitNull < Minitest::Test
         mapper do
           attribute :parts_attributes do
             type :array
-            with AssocPartMapper
+            with NullPartMapper
             nullable true
           end
         end.map_to_model(Widget.new, {})

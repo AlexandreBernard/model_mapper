@@ -8,8 +8,8 @@
 what a key sent with an explicit `null` does: `nullable true` clears the value (`nil`, or `[]` for a
 collection), `nullable false` refuses it with an `InvalidNilValueError` while the key stays optional.
 An absent key is never affected, `required` still wins, and `""`/`[]`/`{}` are not nulls. A value
-other than `true`/`false`, or `nullable` on a param mapped by a sub-mapper, raises
-`ConfigurationError`. See issue #6.
+other than `true`/`false` (`nil` leaves it undeclared), or `nullable` on a param mapped by a
+sub-mapper, raises `ConfigurationError`. See issue #6.
 
 ### Changed
 
@@ -32,7 +32,8 @@ Signed values (`"-5"`, `"+5"`, `-5`) and Float params were rejected before and s
 A plain Hash payload is now read indifferently to symbol and string keys, at every level of a `from`
 path, for a sub-mapper's section and for a reference identifier — as an `ActionController::Parameters`
 already was. `{ 'name' => 'x' }` used to be silently ignored by `attribute :name` and now sets it; when
-both forms are present, the key as declared wins. A list or a scalar where a section is expected still
+both forms are present, the key as declared wins — including for a reference identifier, so
+`{ category: { id: nil, 'id' => 1 } }` is now a missing id where it used to find category 1. A list or a scalar where a section is expected still
 raises `TypeError`.
 
 ### Deprecated
