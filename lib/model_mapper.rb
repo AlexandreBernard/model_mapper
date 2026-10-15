@@ -409,13 +409,13 @@ module ModelMapper
     end
   end
 
-  # The records currently associated, read without loading the association onto the target: the
-  # in-memory target when it is loaded, else a query on the association's scope, which a
-  # `strict_loading` owner allows (only lazily loading the association raises).
+  # The records currently associated. An unloaded association is read through its scope, which a
+  # `strict_loading` owner allows (only a lazy load raises), and that snapshot becomes the loaded target —
+  # as ActiveRecord's own replace would load it — so the writer later diffs against the very records
+  # checked here, not a fresh read that may hold a child attached in between.
   def current_association_records(association, reflection)
-    return association.target if association.loaded?
-
-    reflection.collection? ? association.scope.to_a : association.scope.first
+    association.target = reflection.collection? ? association.scope.to_a : association.scope.first unless association.loaded?
+    association.target
   end
 
   def record_keys(records) = records.to_set { |record| [record.class, record.id] }
