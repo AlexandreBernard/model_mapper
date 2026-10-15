@@ -269,6 +269,27 @@ class TestImmediateWrite < Minitest::Test
     assert_equal widget.id, b.reload.widget_id
   end
 
+  # A child attached between the check and the assignment (stood in for by a hook) is not detached:
+  # the writer diffs against the records the check read.
+  def test_child_attached_after_the_check_is_left_alone
+    widget = Widget.create!
+    part = Part.create!(name: 'a', widget:)
+    late = nil
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      attribute :price do type :float end
+      before_assignation { |*| late = Part.create!(name: 'late', widget_id: widget.id) }
+    end
+
+    result = klass.map_to_model(widget, { parts: [{ id: part.id }], price: 'abc' })
+    assert_equal ['price'], result.errors.keys
+    assert_equal widget.id, late.reload.widget_id
+    assert_equal widget.id, part.reload.widget_id
+  end
+
   def test_new_parent_does_not_warn_nor_write
     part = Part.create!(name: 'a')
     widget = Widget.new
