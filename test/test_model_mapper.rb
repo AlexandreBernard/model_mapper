@@ -1019,6 +1019,30 @@ class TestModelMapper < Minitest::Test
     assert_nil widget.price
   end
 
+  # Everything `to_f` reads in full is accepted, including what a Float or Integer param renders as
+  # (`1.0e+20`, `-0.25`, `3`).
+  def test_float_accepts_signs_leading_dot_and_exponent
+    inputs   = ['12', '12.', ' -1.5 ', '+1.5', '.5', '-.5', '1e3', '1.5E-3', 1e20, -0.25, 3]
+    expected = [12.0, 12.0, -1.5, 1.5, 0.5, -0.5, 1000.0, 0.0015, 1e20, -0.25, 3.0]
+
+    actual = inputs.map do |input|
+      widget = Widget.new
+      FloatService.new(widget, { price: input }).call
+      widget.price
+    end
+
+    assert_equal expected, actual
+  end
+
+  # The format is anchored: `to_f` would silently read these as 12.0, 1.0, 1.2, 0.0, 12.0 and 0.0.
+  def test_float_rejects_trailing_or_leading_garbage
+    ['12abc', '1,5', '1.2.3', 'abc12', "12\nabc", '- 1'].each do |input|
+      service = FloatService.new(Widget.new, { price: input })
+      error   = assert_raises(ModelMapper::ValidationError, input.inspect) { service.call }
+      assert_kind_of ModelMapper::InvalidFormatError, error.first_error, input.inspect
+    end
+  end
+
   # Integer type
 
   def test_integer_converts_valid_string

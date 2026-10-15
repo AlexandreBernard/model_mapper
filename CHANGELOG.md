@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+`type :float` checked its format with an unanchored regex, so any string holding a digit passed, and
+`to_f` then silently kept its leading number: `"1,5"` became `1.0`, `"12abc"` `12.0`, `"abc12"` and
+`"- 1"` `0.0`. The format is now anchored and such strings are an `InvalidFormatError`. Everything
+`to_f` reads in full is still accepted: sign, leading dot (`".5"`), exponent (`"1e3"`), and Float or
+Integer params (`-0.25`, `1e20`, `3`).
+
 ### Fixed
 
 `type :boolean` called `value.to_bool`, a method the gem never defined: a host app without it raised

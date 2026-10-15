@@ -577,8 +577,13 @@ module ModelMapper
     end
   end
 
+  # Anchored: `to_f` reads a leading number and drops the rest ("1,5" -> 1.0, "abc12" -> 0.0), so only a
+  # string that is a number from end to end is accepted. Sign, leading dot and exponent stay accepted:
+  # a Float param renders as "-0.25" or "1.0e+20".
+  FLOAT_FORMAT = /\A[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\z/
+
   def valid_float_value?(value, param_config, _source_params, _target_object)
-    unless value.to_s.strip.match?(/\d+\.?\d*/)
+    unless value.to_s.strip.match?(FLOAT_FORMAT)
       raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'), expected_format: :float)
     end
 
