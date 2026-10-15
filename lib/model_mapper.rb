@@ -551,6 +551,7 @@ module ModelMapper
     if value && param_config.type_value && respond_to?("valid_#{param_config.type_value}_value?", true)
       value =
         begin
+          reject_invalid_encoding!(value, keys.join('.'))
           send("valid_#{param_config.type_value}_value?", value, param_config, source_params, target_object)
         rescue ModelMapper::InvalidFormatError, ModelMapper::InvalidValueError => e
           raise e unless param_config.default_on_invalid_value?
@@ -562,10 +563,22 @@ module ModelMapper
     value
   end
 
-  # `scrub` first, here and in valid_integer_value?: strip raises ArgumentError on an invalidly encoded
-  # string, which default_on_invalid_value does not catch; scrubbed, it simply fails the format check.
+  # An invalidly encoded string (`"\xFF"`, which `JSON.parse` lets through) is malformed whatever the
+  # type, so it is refused before any validator sees it. Unchecked, `strip` raises ArgumentError (which
+  # `default_on_invalid` does not catch), a numeric format check passes on the valid prefix (`"12\xFF"`),
+  # and the bytes reach `find_by`/`where`, `include?` or a user lambda. Array elements are checked one by
+  # one, under the indexed field (e.g. "tag_ids.2").
+  def reject_invalid_encoding!(value, field)
+    case value
+    when String
+      raise ModelMapper::InvalidFormatError.new(field) unless value.valid_encoding?
+    when Array
+      value.each_with_index { |element, index| reject_invalid_encoding!(element, "#{field}.#{index}") }
+    end
+  end
+
   def valid_float_value?(value, param_config, _source_params, _target_object)
-    unless value.to_s.scrub.strip.match?(/\d+\.?\d*/)
+    unless value.to_s.strip.match?(/\d+\.?\d*/)
       raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'), expected_format: :float)
     end
 
@@ -573,7 +586,7 @@ module ModelMapper
   end
 
   def valid_integer_value?(value, param_config, _source_params, _target_object)
-    unless value.to_s.scrub.strip.match?(/^\d+$/)
+    unless value.to_s.strip.match?(/^\d+$/)
       raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'),
                                                 expected_format: :integer)
     end

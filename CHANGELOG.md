@@ -18,10 +18,12 @@ by position — and a list or section identifier (`{ category: { id: [1] } }`,
 `{ category: { id: { value: 1 } } }`) reached `find_by` as-is, silently matching one element or
 raising a database error. All three are now refused on the id path as an `InvalidValueError`.
 
-`type :integer` and `type :float` raised `ArgumentError` on an invalidly encoded string (`"\xFF"`,
-which `JSON.parse` lets through): `strip` ran before the format check. The error escaped the mapper
-and `default_on_invalid` could not catch it. Such a string is now an `InvalidFormatError` like any
-other malformed number, and `default_on_invalid` falls back on it.
+An invalidly encoded string (`"\xFF"`, which `JSON.parse` lets through) reached the type validators
+unchecked. `type :integer` and `type :float` raised `ArgumentError` from `strip`, which escaped the
+mapper and which `default_on_invalid` could not catch; `type :custom` handed it to the user lambda;
+`type :enumerated` and `type :referential` compared it or looked it up as-is. A typed value that is
+such a string, or an array holding one, is now refused as an `InvalidFormatError` before its validator
+runs — keyed `<field>.<index>` for an array element — and `default_on_invalid` falls back on it.
 
 ## 0.4.1
 

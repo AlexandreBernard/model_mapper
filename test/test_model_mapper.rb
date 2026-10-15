@@ -340,6 +340,33 @@ class DefaultOnInvalidService
   end
 end
 
+# Same as DefaultOnInvalidService on a float, with a default that differs from any parsed prefix.
+class DefaultOnInvalidFloatService
+  include ModelMapper
+
+  attr_reader :widget, :params
+
+  def initialize(widget, params)
+    @widget = widget
+    @params = params
+  end
+
+  map_model do
+    from :@params
+    to :widget
+
+    attribute :price do
+      type :float
+      default 7
+      default_on_invalid true
+    end
+  end
+
+  def call
+    save_to_model!
+  end
+end
+
 class ConditionService
   include ModelMapper
 
@@ -821,6 +848,13 @@ class TestModelMapper < Minitest::Test
     assert_kind_of ModelMapper::InvalidValueError, error.errors['info.status']
   end
 
+  def test_enumerated_rejects_invalid_utf8_as_a_format_error
+    widget = Widget.new
+    service = SimpleService.new(widget, { info: { status: "active\xFF".dup.force_encoding('UTF-8') } })
+    error = assert_raises(ModelMapper::ValidationError) { service.call }
+    assert_kind_of ModelMapper::InvalidFormatError, error.errors['info.status']
+  end
+
   # Required params
 
   def test_required_param_raises_when_missing
@@ -976,6 +1010,15 @@ class TestModelMapper < Minitest::Test
     assert_kind_of ModelMapper::InvalidFormatError, error.first_error
   end
 
+  # A valid numeric prefix does not make an invalidly encoded string a number.
+  def test_float_rejects_invalid_utf8_after_digits
+    widget = Widget.new
+    service = FloatService.new(widget, { price: "12\xFF".dup.force_encoding('UTF-8') })
+    error = assert_raises(ModelMapper::ValidationError) { service.call }
+    assert_kind_of ModelMapper::InvalidFormatError, error.first_error
+    assert_nil widget.price
+  end
+
   # Integer type
 
   def test_integer_converts_valid_string
@@ -1004,6 +1047,15 @@ class TestModelMapper < Minitest::Test
     service = IntegerService.new(widget, { quantity: "\xFF".dup.force_encoding('UTF-8') })
     error = assert_raises(ModelMapper::ValidationError) { service.call }
     assert_kind_of ModelMapper::InvalidFormatError, error.first_error
+  end
+
+  # `^\d+$` matches the first line alone; the invalid bytes on the next one must still be refused.
+  def test_integer_rejects_invalid_utf8_on_a_later_line
+    widget = Widget.new
+    service = IntegerService.new(widget, { quantity: "5\n\xFF".dup.force_encoding('UTF-8') })
+    error = assert_raises(ModelMapper::ValidationError) { service.call }
+    assert_kind_of ModelMapper::InvalidFormatError, error.first_error
+    assert_nil widget.quantity
   end
 
   # Boolean type
@@ -1096,6 +1148,14 @@ class TestModelMapper < Minitest::Test
     assert_equal 'ABC', widget.code
   end
 
+  # The user lambda (`value.upcase`) would raise ArgumentError on the invalid bytes.
+  def test_custom_rejects_invalid_utf8_before_the_lambda
+    widget = Widget.new
+    service = CustomValidationService.new(widget, { code: "ab\xFF".dup.force_encoding('UTF-8') })
+    error = assert_raises(ModelMapper::ValidationError) { service.call }
+    assert_kind_of ModelMapper::InvalidFormatError, error.first_error
+  end
+
   # Default values
 
   def test_default_used_when_param_missing
@@ -1126,6 +1186,13 @@ class TestModelMapper < Minitest::Test
     service = DefaultOnInvalidService.new(widget, { quantity: "\xFF".dup.force_encoding('UTF-8') })
     service.call
     assert_equal 0, widget.quantity
+  end
+
+  def test_default_on_invalid_falls_back_on_invalid_utf8_after_digits
+    widget = Widget.new
+    service = DefaultOnInvalidFloatService.new(widget, { price: "12\xFF".dup.force_encoding('UTF-8') })
+    service.call
+    assert_equal 7.0, widget.price
   end
 
   # Condition
@@ -1824,6 +1891,15 @@ class TestModelMapper < Minitest::Test
 
     refute service.valid?
     assert_includes service.errors.keys, 'numbers'
+  end
+
+  def test_array_invalid_utf8_element_surfaces_indexed_format_error
+    widget  = Widget.new
+    service = ArrayWidgetMapper.new(widget, { numbers: ['1', "2\xFF".dup.force_encoding('UTF-8')] })
+    service.map_to_model
+
+    refute service.valid?
+    assert_kind_of ModelMapper::InvalidFormatError, service.errors['numbers.1']
   end
 
   # --- `type :array` configuration guards ---
