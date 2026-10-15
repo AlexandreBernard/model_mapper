@@ -8,7 +8,7 @@ module ModelMapper
     attr_reader :name
     attr_accessor :at_keys, :type_value, :field_value, :allowing_value, :required_value, :multiple_value, :assign_value,
                   :default_value, :default_on_invalid_value, :condition_value, :mapper_value, :with_value, :of_value,
-                  :nullable_value
+                  :nullable_value, :immediate_write_value
 
     def initialize(name)
       @name = name
@@ -20,6 +20,7 @@ module ModelMapper
       @multiple_value = false
       @assign_value = true
       @nullable_value = nil
+      @immediate_write_value = nil
       @default_value = nil
       @default_on_invalid = false
       @condition_value = nil
@@ -79,6 +80,15 @@ module ModelMapper
     # tells "said nothing" from "said true/false", letting a child override its parent either way.
     def nullable(value)
       @nullable_value = value
+    end
+
+    # Whether a reference `association` may be assigned when ActiveRecord would write that assignment to
+    # the database immediately: a has_one/has_many/HABTM on a persisted record, with a value that differs
+    # from the current one. Such a write happens during the map, before validity is known, and stays even
+    # if the mapping then fails. `true` accepts it, `false` refuses it with an InvalidValueError. Undeclared
+    # (nil) still accepts it, with a deprecation warning, since a future release refuses it by default.
+    def immediate_write(value)
+      @immediate_write_value = value
     end
 
     # Cardinality of an `association`: `many: true` ⇒ 1-n (collection). Alias of `multiple`, named for
@@ -150,6 +160,7 @@ module ModelMapper
       @multiple_value = other.multiple_value if other.explicitly_set?(:multiple_value)
       @assign_value = other.assign_value if other.explicitly_set?(:assign_value)
       @nullable_value = other.nullable_value if other.explicitly_set?(:nullable_value)
+      @immediate_write_value = other.immediate_write_value if other.explicitly_set?(:immediate_write_value)
       @default_value = other.default_value if other.explicitly_set?(:default_value)
       @default_on_invalid_value = other.default_on_invalid_value if other.explicitly_set?(:default_on_invalid_value)
       @condition_value = other.condition_value if other.explicitly_set?(:condition_value)
@@ -171,6 +182,7 @@ module ModelMapper
       copy.multiple_value = @multiple_value
       copy.assign_value = @assign_value
       copy.nullable_value = @nullable_value
+      copy.immediate_write_value = @immediate_write_value
       copy.default_value = @default_value
       copy.default_on_invalid_value = @default_on_invalid_value
       copy.condition_value = @condition_value

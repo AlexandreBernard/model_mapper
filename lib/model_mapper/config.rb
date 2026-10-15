@@ -110,6 +110,7 @@ module ModelMapper
       @params.each_value do |param_config|
         validate_array_param!(param_config)
         validate_nullable_param!(param_config)
+        validate_immediate_write_param!(param_config)
       end
       unless @deprecations_warned
         @params.each_value { |param_config| validate_association_param!(param_config) }
@@ -119,11 +120,13 @@ module ModelMapper
 
     private
 
-    # Apply the keyword options accepted by `attribute`/`association` (`many:`, `nullable:`). The
+    # Apply the keyword options accepted by `attribute`/`association` (`many:`, `nullable:`,
+    # `immediate_write:`). The
     # processing condition is set with the `map_if` block method, not an option.
     def apply_options(param_config, options)
       param_config.many(options[:many]) if options.key?(:many)
       param_config.nullable(options[:nullable]) if options.key?(:nullable)
+      param_config.immediate_write(options[:immediate_write]) if options.key?(:immediate_write)
     end
 
     # Resolve the resolution mode of an `association` from what the block declared:
@@ -156,6 +159,21 @@ module ModelMapper
       raise ModelMapper::ConfigurationError,
             "`nullable` does not apply to `#{param_config.name}`: a param mapped by a sub-mapper " \
             'is never cleared by a null'
+    end
+
+    # `immediate_write` governs only the writer of a reference `association` (`allowing` without `with`):
+    # anywhere else nothing would read it, so declaring it is refused rather than accepted and ignored.
+    def validate_immediate_write_param!(param_config)
+      unless [nil, true, false].include?(param_config.immediate_write_value)
+        raise ModelMapper::ConfigurationError,
+              "`immediate_write` takes true or false (`#{param_config.name}`: " \
+              "#{param_config.immediate_write_value.inspect})"
+      end
+      return if param_config.reference? || param_config.immediate_write_value.nil?
+
+      raise ModelMapper::ConfigurationError,
+            "`immediate_write` does not apply to `#{param_config.name}`: it only governs a reference " \
+            '`association` (`allowing` without `with`)'
     end
 
     # `type :array` must declare exactly one element strategy: `mapper` (array of records) or `of`

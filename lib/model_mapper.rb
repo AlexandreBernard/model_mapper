@@ -62,31 +62,55 @@ module ModelMapper
     File.expand_path('..', __dir__)
   end
 
-  EXPLICIT_NULL_WARNINGS = Set.new
-  EXPLICIT_NULL_WARNINGS_LOCK = Mutex.new
-  private_constant :EXPLICIT_NULL_WARNINGS, :EXPLICIT_NULL_WARNINGS_LOCK
+  DEPRECATION_WARNINGS = Set.new
+  DEPRECATION_WARNINGS_LOCK = Mutex.new
+  private_constant :DEPRECATION_WARNINGS, :DEPRECATION_WARNINGS_LOCK
 
   # Deprecation: an explicit null on a param that does not declare `nullable` is still treated like an
-  # absent key, but a future release clears the value instead. Warned at most once per (mapper class,
-  # param) per process — the same endpoint receives the same null on every request. Keyed by the class's
-  # object_id rather than the class itself, so a warned anonymous mapper can still be garbage-collected
-  # (a reused id can at worst hide one warning), and two live anonymous mappers never share an entry.
+  # absent key, but a future release clears the value instead.
   def self.warn_explicit_null_once(mapper_class, param_name, keys)
-    key = [mapper_class.object_id, param_name]
-    return unless EXPLICIT_NULL_WARNINGS_LOCK.synchronize { EXPLICIT_NULL_WARNINGS.add?(key) }
+    return unless first_deprecation?(:explicit_null, mapper_class, param_name)
 
+    warn "[ModelMapper] #{mapper_label(mapper_class, param_name, keys)} received an explicit null, which is " \
+         'treated like an absent key (skipped, or replaced by its `default`); a future release will clear the ' \
+         'value instead. Declare `nullable true` to clear it now, or `nullable false` to reject the null.'
+  end
+
+  # Deprecation: a reference that does not declare `immediate_write` is still assigned when ActiveRecord
+  # writes that assignment to the database at once, but a future release refuses it instead.
+  def self.warn_immediate_write_once(mapper_class, param_name, keys)
+    return unless first_deprecation?(:immediate_write, mapper_class, param_name)
+
+    warn "[ModelMapper] #{mapper_label(mapper_class, param_name, keys)} changed an association of a persisted " \
+         'record, which ActiveRecord writes to the database immediately, during the map: it stays written even if ' \
+         'the mapping then fails, and old children are deleted under `dependent: :destroy`. A future release will ' \
+         'refuse it instead. Declare `immediate_write false` to refuse it now, or `immediate_write true` to keep ' \
+         'writing.'
+  end
+
+  # Each deprecation is warned at most once per (kind, mapper class, param) per process — the same
+  # endpoint receives the same payload on every request. Keyed by the class's object_id rather than the
+  # class itself, so a warned anonymous mapper can still be garbage-collected (a reused id can at worst
+  # hide one warning), and two live anonymous mappers never share an entry.
+  def self.first_deprecation?(kind, mapper_class, param_name)
+    key = [kind, mapper_class.object_id, param_name]
+    DEPRECATION_WARNINGS_LOCK.synchronize { DEPRECATION_WARNINGS.add?(key) }
+  end
+
+  def self.mapper_label(mapper_class, param_name, keys)
     path = keys.join('.')
     sent_as = path == param_name.to_s ? '' : " (sent as `#{path}`)"
-    warn "[ModelMapper] #{mapper_class.name || mapper_class.inspect}: `#{param_name}`#{sent_as} received an " \
-         'explicit null, which is treated like an absent key (skipped, or replaced by its `default`); a future ' \
-         'release will clear the value instead. Declare `nullable true` to clear it now, or `nullable false` ' \
-         'to reject the null.'
+    "#{mapper_class.name || mapper_class.inspect}: `#{param_name}`#{sent_as}"
+  end
+  private_class_method :first_deprecation?, :mapper_label
+
+  # Forget which deprecations were already emitted (tests).
+  def self.reset_deprecation_warnings!
+    DEPRECATION_WARNINGS_LOCK.synchronize { DEPRECATION_WARNINGS.clear }
   end
 
-  # Forget which explicit-null deprecations were already emitted (tests).
-  def self.reset_explicit_null_warnings!
-    EXPLICIT_NULL_WARNINGS_LOCK.synchronize { EXPLICIT_NULL_WARNINGS.clear }
-  end
+  # @deprecated Use {.reset_deprecation_warnings!}, which this now calls (it forgets every kind).
+  def self.reset_explicit_null_warnings! = reset_deprecation_warnings!
 
   def self.included(base)
     base.extend(ClassMethods)
@@ -283,6 +307,8 @@ module ModelMapper
           end
         end
         value = validate_param(param_config, source_params, target_object, allow_nil) unless cleared
+        # Only a value that will be assigned can write: a skipped nil never reaches the writer.
+        guard_immediate_write!(target_object, param_config, value) if param_config.assign? && (cleared || !value.nil?)
       rescue ModelMapper::InvalidValueError, ModelMapper::InvalidFormatError => e
         validation_errors[e.field] = e
         errored_fields << param_name.to_s
@@ -343,6 +369,43 @@ module ModelMapper
     merge_record_errors!(validation_errors, target_object, errored_fields, associations: association_fields)
 
     [target_object, validation_errors]
+  end
+
+  # A reference `association` is assigned through the ActiveRecord association writer, which on a
+  # persisted record writes at once for anything but a belongs_to (has_one saves/nullifies the child,
+  # has_many and HABTM insert/update/delete rows) — during the map, before validity is known, with no
+  # rollback. `immediate_write` decides: false refuses the value, true accepts it, undeclared accepts it
+  # with a deprecation warning. A value equal to the current one writes nothing, so it always passes.
+  def guard_immediate_write!(target, param_config, value)
+    return if param_config.immediate_write_value == true
+    return unless immediate_write?(target, param_config, value)
+
+    if param_config.immediate_write_value == false
+      field = param_config.keys.join('.')
+      raise ModelMapper::InvalidValueError.new(field,
+                                               details: I18n.t('errors.invalid_value_details.reference_write_refused'))
+    end
+
+    ModelMapper.warn_immediate_write_once(self.class, param_config.name, param_config.keys)
+  end
+
+  # Whether assigning `value` to this reference makes ActiveRecord write to the database now.
+  # `load_target` only reads. A collection is compared as a set of ids: ActiveRecord's replace diffs the
+  # records, so another order or a repeated id writes nothing.
+  def immediate_write?(target, param_config, value)
+    return false unless param_config.reference?
+    return false unless target.respond_to?(:persisted?) && target.persisted?
+    return false unless target.class.respond_to?(:reflect_on_association)
+
+    reflection = target.class.reflect_on_association(param_config.name)
+    return false if reflection.nil? || reflection.macro == :belongs_to
+
+    current = target.association(reflection.name).load_target
+    if reflection.collection?
+      Array(value).to_set(&:id) != current.to_set(&:id)
+    else
+      current != value
+    end
   end
 
   # Run the target's own ActiveModel/ActiveRecord validations (without saving) and merge them into
