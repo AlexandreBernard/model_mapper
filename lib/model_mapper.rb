@@ -406,7 +406,7 @@ module ModelMapper
 
       # Only a truly absent section is skipped; a present-but-empty `{}` is built and validated (its
       # required sub-fields then surface), and an empty array simply yields zero records.
-      sub_source = source_params.dig(*param_config.keys)
+      _, sub_source = read_path(source_params, param_config.keys)
       next if sub_source.nil?
 
       context = param_config.with_value ? instance_exec(&param_config.with_value) : {}
@@ -581,7 +581,7 @@ module ModelMapper
   def validate_param(param_config, source_params, target_object, allow_nil)
     keys = param_config.keys
 
-    value = source_params.dig(*keys)
+    _, value = read_path(source_params, keys)
     default_value =
       (set_default_value(value, source_params, param_config) unless param_config.default_value.nil?)
 
@@ -854,7 +854,7 @@ module ModelMapper
   def reference_id(element, identifier)
     return element unless element.respond_to?(:dig) && !element.is_a?(Array)
 
-    element[identifier] || element[identifier.to_s]
+    read_key(element, identifier).last
   end
 
   # Params path for a reference error: the `from` section path + optional index + the identifier.
@@ -892,13 +892,45 @@ module ModelMapper
   end
 
   # Whether the payload sends this param as an explicit null: the last key of its path is present in
-  # its parent with a nil value. The parent is read with the very keys `validate_param` digs with (no
-  # symbol/string fallback), so a key that cannot set a value cannot clear one either. A nil or empty
-  # parent section, and blank values ("", [], {}), are not explicit nulls.
+  # its parent with a nil value. Read by the same `read_path` that reads the value, so a key that sets a
+  # value is the key that clears it. A nil or empty parent section, and blank values ("", [], {}), are
+  # not explicit nulls.
   def explicit_null?(param_config, source_params)
-    *path, last = param_config.keys
-    parent = path.empty? ? source_params : source_params.dig(*path)
-    parent.respond_to?(:key?) && parent.key?(last) && parent[last].nil?
+    present, value = read_path(source_params, param_config.keys)
+    present && value.nil?
+  end
+
+  # The single read of a `from` path in the payload: [present, raw value]. Every level is read with
+  # `read_key`, so a plain Hash answers to symbol and string keys alike, as an
+  # ActionController::Parameters already does. Absent as soon as one level is missing or nil.
+  def read_path(source_params, keys)
+    keys.reduce([true, source_params]) do |(_, section), key|
+      present, value = read_key(section, key)
+      break [false, nil] unless present
+
+      [true, value]
+    end
+  end
+
+  # [present, value] of one key in a payload section, indifferent to symbol/string: the key as declared
+  # wins, then its other form. A section that is not keyed (a list, a scalar) keeps Hash#dig's answer —
+  # a list digs by position and a scalar has no #dig — so a malformed payload still raises TypeError.
+  def read_key(section, key)
+    return [false, nil] if section.nil?
+
+    unless section.respond_to?(:key?) && !section.is_a?(Array)
+      raise TypeError, "#{section.class} does not have #dig method" unless section.respond_to?(:dig)
+
+      value = section.dig(key)
+      return [!value.nil?, value]
+    end
+
+    other_form = case key
+                 when Symbol then key.to_s
+                 when String then key.to_sym
+                 end
+    found = [key, other_form].compact.find { |candidate| section.key?(candidate) }
+    found.nil? ? [false, nil] : [true, section[found]]
   end
 
   def smart_presence(value)

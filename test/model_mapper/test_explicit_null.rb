@@ -153,14 +153,19 @@ class TestExplicitNull < Minitest::Test
     assert_equal false, widget.active
   end
 
-  def test_string_key_null_on_a_symbol_declaration_is_not_an_explicit_null
-    klass = mapper do
-      attribute :name, nullable: true
-    end
-    widget = Widget.new(name: 'kept')
+  def test_string_key_null_on_a_symbol_declaration_is_an_explicit_null
+    undeclared = mapper { attribute :name }
+    nullable = mapper { attribute :name, nullable: true }
+    refusing = mapper { attribute :name, nullable: false }
 
-    assert_output(nil, '') { klass.map_to_model(widget, { 'name' => nil }) }
+    widget = Widget.new(name: 'kept')
+    assert_output(nil, warning_for(:name)) { undeclared.map_to_model(widget, { 'name' => nil }) }
     assert_equal 'kept', widget.name
+
+    nullable.map_to_model!(widget, { 'name' => nil })
+    assert_nil widget.name
+
+    assert_includes refusing.map_to_model(Widget.new, { 'name' => nil }).errors.keys, 'name'
   end
 
   def test_null_or_empty_parent_of_a_nested_path_is_not_an_explicit_null

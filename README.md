@@ -72,6 +72,10 @@ end
 
 Both accept a Symbol. Symbols starting with `@` are resolved as instance variables; others are sent as method calls on the service instance.
 
+Payload keys are read indifferently to symbol and string at every level — `attribute :name` reads
+`{ name: … }` and `{ 'name' => … }` alike, as an `ActionController::Parameters` already does. When a
+plain Hash carries both forms, the key as declared wins.
+
 ### Associations: `association`
 
 A single `association` declaration covers every way to link a record (or records) to the target:
@@ -270,8 +274,8 @@ end
 - `required` wins: a required param refuses a null whatever `nullable` says.
 - `""`, `[]`, `{}` are not explicit nulls and keep being skipped. On a nested `from :info, :status`,
   `{ info: null }` or `{ info: {} }` is not a null for `status` either.
-- The key is matched exactly as `from` declares it (`:nickname` does not match `"nickname"`; an
-  `ActionController::Parameters` is indifferent to both).
+- The key is read like any value, indifferently to symbol/string: `{ 'nickname' => null }` is a null
+  for `attribute :nickname`.
 - The null must sit on the **last** key of the `from` path. The deprecated `type :referential` reads
   `from :category, :id`, so `{ category: { id: null } }` is its null and `{ category: null }` is not;
   an `association :category` reads the section itself, so `{ category: null }` is.

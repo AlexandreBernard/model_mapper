@@ -29,6 +29,12 @@ now anchored to the whole string and both are an `InvalidFormatError`. The accep
 unchanged: digits with surrounding whitespace (`" 12 "`, `"12\n"`) and non-negative Integer params.
 Signed values (`"-5"`, `"+5"`, `-5`) and Float params were rejected before and still are.
 
+A plain Hash payload is now read indifferently to symbol and string keys, at every level of a `from`
+path, for a sub-mapper's section and for a reference identifier — as an `ActionController::Parameters`
+already was. `{ 'name' => 'x' }` used to be silently ignored by `attribute :name` and now sets it; when
+both forms are present, the key as declared wins. A list or a scalar where a section is expected still
+raises `TypeError`.
+
 ### Deprecated
 
 An explicit `null` on a param without `nullable` is still treated like an absent key (skipped, or

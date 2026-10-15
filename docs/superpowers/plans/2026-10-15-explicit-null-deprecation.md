@@ -41,7 +41,7 @@ contract below and cost more than they return.
      (`belongs_to :category`) cleared; `type :array, of: :integer` → `[]`; `default` not applied;
      `assign false` sets the reader only; no warning.
    - `nullable false`: null → `ValidationError` with the field; absent key → no error; no warning.
-   - string key `{ 'name' => nil }` on a symbol-keyed declaration: not an explicit null (no clear,
+   - (superseded: keys are read indifferently — see the spec) string key `{ 'name' => nil }` on a symbol-keyed declaration: not an explicit null (no clear,
      no warning) — consistent with `{ 'name' => 'x' }` being ignored.
    - sub-mapper association with null: skipped, no warning.
 5. README: `nullable` in the attribute options, a "Clearing a value" section, a Deprecations row.

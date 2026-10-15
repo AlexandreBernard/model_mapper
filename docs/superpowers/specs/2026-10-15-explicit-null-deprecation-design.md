@@ -20,10 +20,13 @@ prepares it without changing any behaviour by default:
 ## Definitions
 
 **Explicit null** — the last key of the param's `from` path is present in its parent and its raw
-value is `nil`. The parent is `source_params` for a one-key path, `source_params.dig(*keys[0..-2])`
-otherwise, and must answer `key?`. Presence is tested with the very key object `dig` uses — no
-symbol/string fallback — so a key that cannot set a value cannot clear one either (PR #7 review,
-finding 3). `""`, `[]` and `{}` are **not** explicit nulls: they keep today's behaviour (skipped,
+value is `nil`. The value and its presence come from one read, `read_path`, which walks the path
+level by level, each key indifferent to symbol/string (the declared form wins when both are
+present). The same read serves `validate_param`, a sub-mapper's section and a reference identifier,
+so a key that sets a value is exactly the key that clears it (PR #7 review, findings 3 and 6).
+Decided with the owner: indifferent everywhere, so `{ 'name' => 'x' }` on a plain Hash, silently
+ignored before, now sets the value — a behaviour change listed under *Changed*. A list or scalar where
+a section is expected still raises `TypeError`, as `Hash#dig` did. `""`, `[]` and `{}` are **not** explicit nulls: they keep today's behaviour (skipped,
 no warning). `{}` on a reference says nothing about the current value; `[]` and `""` are left for
 PR #7 to decide.
 
@@ -82,7 +85,9 @@ A nested param adds the payload path: `` `status` (sent as `info.status`) ``.
   sub-mapper associations, and a validation-only param (`assign false`), which assigns nothing.
 
 A param with a `default` is warned too: the target semantics (issue #6, RFC 7396) is that a null
-clears, and `default` answers the absent key.
+clears, and `default` answers the absent key. Decided with the owner: PR #7 as it stands applies the
+default to a null (its review finding 5) and must align on this, or an app that declared
+`nullable true` here changes behaviour when it merges.
 
 ## Known limitation, out of scope
 
