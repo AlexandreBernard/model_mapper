@@ -93,9 +93,9 @@ warning.
 A reference `association`, or an `attribute` assigned through a collection's ids writer, without
 `immediate_write` is still assigned when ActiveRecord writes that assignment at once, but now warns —
 once per mapper class and param — because a future release will refuse it instead. Declare
-`immediate_write true` or `immediate_write false` to choose now and silence the warning. `ModelMapper.reset_explicit_null_warnings!` is superseded by
-`ModelMapper.reset_deprecation_warnings!`, which forgets every kind of deprecation warning; the old
-name still works and does the same.
+`immediate_write true` or `immediate_write false` to choose now and silence the warning.
+`ModelMapper.reset_explicit_null_warnings!` is superseded by `ModelMapper.reset_deprecation_warnings!`,
+which forgets every kind of deprecation warning; the old name still works and does the same.
 
 ### Fixed
 
