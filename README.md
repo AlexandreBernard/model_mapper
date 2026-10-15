@@ -253,8 +253,8 @@ raw value `nil`) is governed by `nullable`:
 
 | `nullable` | Explicit `null` |
 |---|---|
-| undeclared | skipped, as an absent key (`default` still applies) — **deprecated**, emits a warning |
-| `true` | clears the value: `nil`, or `[]` for a collection (`many: true`, `type :array`); `default` does not apply |
+| undeclared | treated like an absent key (skipped, or replaced by its `default`) — **deprecated**, emits a warning |
+| `true` | clears the value: `nil`, or `[]` for a collection (`many: true`, `type :array`); `default`, `allowing` and type validation do not apply |
 | `false` | refused with an `InvalidNilValueError` on the param's path; the key itself stays optional |
 
 ```ruby
@@ -266,16 +266,22 @@ association :category do
 end
 ```
 
+- `nullable` takes `true` or `false`; anything else raises `ConfigurationError`.
 - `required` wins: a required param refuses a null whatever `nullable` says.
 - `""`, `[]`, `{}` are not explicit nulls and keep being skipped. On a nested `from :info, :status`,
   `{ info: null }` or `{ info: {} }` is not a null for `status` either.
 - The key is matched exactly as `from` declares it (`:nickname` does not match `"nickname"`; an
   `ActionController::Parameters` is indifferent to both).
+- The null must sit on the **last** key of the `from` path. The deprecated `type :referential` reads
+  `from :category, :id`, so `{ category: { id: null } }` is its null and `{ category: null }` is not;
+  an `association :category` reads the section itself, so `{ category: null }` is.
 - A param mapped by a sub-mapper (`association … with`) is never cleared by a null; declaring
   `nullable` on one raises `ConfigurationError`.
-- On a **persisted** record, clearing a `has_one`/`has_many` reference goes through the association
-  writer, which ActiveRecord applies to the database immediately — as it does for any other value
-  assigned to such a reference.
+- ⚠️ On a **persisted** record, clearing a `has_one`/`has_many` reference goes through the association
+  writer, which ActiveRecord applies to the database **immediately, even if the mapping then fails
+  validation**: the previous children are nullified, or **deleted** under `dependent: :destroy`. Any
+  other value assigned to such a reference does the same today. Do not declare `nullable true` on one
+  unless that is acceptable.
 
 ### `default`
 
@@ -662,10 +668,13 @@ absent key, but a future release will **clear** the value instead. Each such nul
 mapper class and param:
 
 ```
-[ModelMapper] WidgetMapper: `nickname` received an explicit null, which is ignored; a future release
-will clear the value instead. Declare `nullable true` to clear it now, or `nullable false` to reject
-the null.
+[ModelMapper] WidgetMapper: `nickname` received an explicit null, which is treated like an absent key
+(skipped, or replaced by its `default`); a future release will clear the value instead. Declare
+`nullable true` to clear it now, or `nullable false` to reject the null.
 ```
+
+A nested param names the payload path too: `` `status` (sent as `info.status`) ``. A validation-only
+param (`assign false`) does not warn: it assigns nothing either way.
 
 Declare `nullable true` where the client means "clear it", `nullable false` where the record cannot
 hold a null. A client that sends `null` to mean "leave it alone" should stop sending the key.

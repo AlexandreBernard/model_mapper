@@ -50,7 +50,8 @@ nothing is assigned, exactly as for any other value of a validation-only param.
 `type :association` / `type :array` + `with` — raises `ConfigurationError` from `Config#validate!`
 (first mapping) rather than being accepted and ignored.
 
-Both forms are accepted, and a child mapper can override its parent's declaration in either
+`nullable` takes `true` or `false`; any other value raises `ConfigurationError` (a lambda, as
+`required` accepts, is not supported). Both forms are accepted, and a child mapper can override its parent's declaration in either
 direction (undeclared is stored as `nil`, so `explicitly_set?` tells "said nothing" from "said true"):
 
 ```ruby
@@ -64,18 +65,21 @@ end
 ## The warning
 
 ```
-[ModelMapper] WidgetMapper: `nickname` received an explicit null, which is ignored; a future release
-will clear the value instead. Declare `nullable true` to clear it now, or `nullable false` to reject
-the null.
+[ModelMapper] WidgetMapper: `nickname` received an explicit null, which is treated like an absent key
+(skipped, or replaced by its `default`); a future release will clear the value instead. Declare
+`nullable true` to clear it now, or `nullable false` to reject the null.
 ```
+
+A nested param adds the payload path: `` `status` (sent as `info.status`) ``.
 
 - Emitted with `Kernel#warn`, prefixed `[ModelMapper]`, like the existing deprecations.
 - At most once per (mapper class, param name) per process: the same endpoint receives the same null
-  on every request. The dedup set lives at module level behind a `Mutex`. It is keyed by the class
-  object, so two anonymous classes never share an entry; the message names the class by
-  `name`, falling back to `inspect`.
+  on every request. The dedup set lives at module level behind a `Mutex`. It is keyed by the
+  class's `object_id`, so two live anonymous classes never share an entry and a warned anonymous
+  class can still be garbage-collected (a reused id can at worst hide one warning); the message names
+  the class by `name`, falling back to `inspect`.
 - Not emitted when the outcome does not change in PR #7: `required`, absent key, `""`/`[]`/`{}`,
-  sub-mapper associations.
+  sub-mapper associations, and a validation-only param (`assign false`), which assigns nothing.
 
 A param with a `default` is warned too: the target semantics (issue #6, RFC 7396) is that a null
 clears, and `default` answers the absent key.

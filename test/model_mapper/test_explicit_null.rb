@@ -69,12 +69,22 @@ class TestExplicitNull < Minitest::Test
     assert_output(nil, warning_for(:name)) { klass.map_to_model(Widget.new, { name: nil }) }
   end
 
-  def test_concurrent_mappings_warn_once
+  def test_warning_says_the_null_is_treated_like_an_absent_key
     klass = mapper { attribute :name }
-    _, err = capture_io do
-      Array.new(20) { Thread.new { klass.map_to_model(Widget.new, { name: nil }) } }.each(&:join)
+
+    assert_output(nil, /treated like an absent key/) { klass.map_to_model(Widget.new, { name: nil }) }
+  end
+
+  def test_warning_names_the_payload_path_of_a_nested_param
+    klass = mapper do
+      attribute :status do
+        from :info, :status
+      end
     end
-    assert_equal 1, err.scan(/`name`/).size
+
+    assert_output(nil, /`status` \(sent as `info\.status`\)/) do
+      klass.map_to_model(Widget.new, { info: { status: nil } })
+    end
   end
 
   def test_undeclared_null_with_default_applies_the_default_and_warns
@@ -189,6 +199,16 @@ class TestExplicitNull < Minitest::Test
     end
     assert_kind_of ModelMapper::InvalidNilValueError, error.errors['name']
     assert_equal 'kept', widget.name
+  end
+
+  def test_validation_only_param_does_not_warn
+    klass = mapper do
+      attribute :name do
+        assign false
+      end
+    end
+
+    assert_output(nil, '') { klass.map_to_model(Widget.new, { name: nil }) }
   end
 
   def test_map_if_false_skips_before_warning
@@ -375,8 +395,13 @@ class TestExplicitNull < Minitest::Test
     parent = mapper do
       attribute :name, nullable: true
     end
+    # The child re-declares `name` without `nullable`, so `merge!` runs on it and must keep the parent's.
     child = Class.new(parent) do
-      map_model { attribute :code }
+      map_model do
+        attribute :name do
+          required false
+        end
+      end
     end
     widget = Widget.new(name: 'old')
 
@@ -419,6 +444,15 @@ class TestExplicitNull < Minitest::Test
           end
         end.map_to_model(Widget.new, {})
       end
+    end
+  end
+
+  def test_nullable_other_than_true_or_false_is_a_configuration_error
+    ['false', :true, 1, -> { true }].each do |value|
+      error = assert_raises(ModelMapper::ConfigurationError) do
+        mapper { attribute :name, nullable: value }.map_to_model(Widget.new, {})
+      end
+      assert_match(/`nullable` takes true or false/, error.message)
     end
   end
 

@@ -66,16 +66,21 @@ module ModelMapper
   EXPLICIT_NULL_WARNINGS_LOCK = Mutex.new
   private_constant :EXPLICIT_NULL_WARNINGS, :EXPLICIT_NULL_WARNINGS_LOCK
 
-  # Deprecation: an explicit null on a param that does not declare `nullable` is still skipped, but a
-  # future release clears the value instead. Warned at most once per (mapper class, param) per process —
-  # the same endpoint receives the same null on every request. Keyed by the class object, so two
-  # anonymous mappers never share an entry.
-  def self.warn_explicit_null_once(mapper_class, param_name)
-    return unless EXPLICIT_NULL_WARNINGS_LOCK.synchronize { EXPLICIT_NULL_WARNINGS.add?([mapper_class, param_name]) }
+  # Deprecation: an explicit null on a param that does not declare `nullable` is still treated like an
+  # absent key, but a future release clears the value instead. Warned at most once per (mapper class,
+  # param) per process — the same endpoint receives the same null on every request. Keyed by the class's
+  # object_id rather than the class itself, so a warned anonymous mapper can still be garbage-collected
+  # (a reused id can at worst hide one warning), and two live anonymous mappers never share an entry.
+  def self.warn_explicit_null_once(mapper_class, param_name, keys)
+    key = [mapper_class.object_id, param_name]
+    return unless EXPLICIT_NULL_WARNINGS_LOCK.synchronize { EXPLICIT_NULL_WARNINGS.add?(key) }
 
-    warn "[ModelMapper] #{mapper_class.name || mapper_class.inspect}: `#{param_name}` received an explicit null, " \
-         'which is ignored; a future release will clear the value instead. Declare `nullable true` to clear it ' \
-         'now, or `nullable false` to reject the null.'
+    path = keys.join('.')
+    sent_as = path == param_name.to_s ? '' : " (sent as `#{path}`)"
+    warn "[ModelMapper] #{mapper_class.name || mapper_class.inspect}: `#{param_name}`#{sent_as} received an " \
+         'explicit null, which is treated like an absent key (skipped, or replaced by its `default`); a future ' \
+         'release will clear the value instead. Declare `nullable true` to clear it now, or `nullable false` ' \
+         'to reject the null.'
   end
 
   # Forget which explicit-null deprecations were already emitted (tests).
@@ -273,7 +278,8 @@ module ModelMapper
           when false
             raise ModelMapper::InvalidNilValueError.new(param_config.keys.join('.'))
           else
-            ModelMapper.warn_explicit_null_once(self.class, param_name)
+            # A validation-only param assigns nothing, so clearing it changes nothing worth warning about.
+            ModelMapper.warn_explicit_null_once(self.class, param_name, param_config.keys) if param_config.assign?
           end
         end
         value = validate_param(param_config, source_params, target_object, allow_nil) unless cleared

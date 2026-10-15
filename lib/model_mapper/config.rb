@@ -146,6 +146,11 @@ module ModelMapper
     # records, and mapping is write-free. `nullable` has nothing to govern there, so declaring it is
     # refused rather than accepted and ignored.
     def validate_nullable_param!(param_config)
+      unless [nil, true, false].include?(param_config.nullable_value)
+        raise ModelMapper::ConfigurationError,
+              "`nullable` takes true or false (`#{param_config.name}`: " \
+              "#{param_config.nullable_value.inspect})"
+      end
       return unless param_config.mapper? && param_config.explicitly_set?(:nullable_value)
 
       raise ModelMapper::ConfigurationError,

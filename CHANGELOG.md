@@ -7,8 +7,9 @@
 `nullable` on `attribute` and on a reference `association` (block method or `nullable:` keyword) says
 what a key sent with an explicit `null` does: `nullable true` clears the value (`nil`, or `[]` for a
 collection), `nullable false` refuses it with an `InvalidNilValueError` while the key stays optional.
-An absent key is never affected, `required` still wins, and `""`/`[]`/`{}` are not nulls. Declaring
-it on a param mapped by a sub-mapper raises `ConfigurationError`. See issue #6.
+An absent key is never affected, `required` still wins, and `""`/`[]`/`{}` are not nulls. A value
+other than `true`/`false`, or `nullable` on a param mapped by a sub-mapper, raises
+`ConfigurationError`. See issue #6.
 
 ### Changed
 
@@ -30,8 +31,9 @@ Signed values (`"-5"`, `"+5"`, `-5`) and Float params were rejected before and s
 
 ### Deprecated
 
-An explicit `null` on a param without `nullable` is still skipped like an absent key, but now warns —
-once per mapper class and param — because a future release will clear the value instead. Declare
+An explicit `null` on a param without `nullable` is still treated like an absent key (skipped, or
+replaced by its `default`), but now warns — once per mapper class and param, not for a validation-only
+param — because a future release will clear the value instead. Declare
 `nullable true` or `nullable false` to choose the behaviour now and silence the warning.
 
 ### Fixed
