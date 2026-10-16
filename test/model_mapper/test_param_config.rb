@@ -31,8 +31,20 @@ class TestParamConfig < Minitest::Test
   end
 
   def test_identifier_sets_field_value
-    assert_output(nil, /`identifier` is deprecated/) { @config.identifier :code }
+    assert_output(nil, /\A\[ModelMapper\] `identifier` is deprecated; use `id_field` instead \(attribute `street_id`\)\.\n\z/) do
+      @config.identifier :code
+    end
     assert_equal :code, @config.field_value
+  end
+
+  # One warning per declaration, like `field`: not deduplicated per class/param like the nullable one.
+  def test_identifier_warns_on_every_declaration
+    _, err = capture_io do
+      ModelMapper::ParamConfig.new(:street_id).identifier :code
+      ModelMapper.reset_deprecation_warnings!
+      ModelMapper::ParamConfig.new(:street_id).identifier :code
+    end
+    assert_equal 2, err.scan('`identifier` is deprecated; use `id_field` instead (attribute `street_id`).').size
   end
 
   def test_allowing_sets_allowing_value

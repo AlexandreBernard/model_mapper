@@ -525,7 +525,11 @@ class TestAssociation < Minitest::Test
     end
     category = Category.create!(name: 'ByIdentifier', enabled: true)
 
-    mapper = mapper_class.map_to_model(Widget.new, { category: { name: 'ByIdentifier' } })
+    mapper = nil
+    assert_silent do
+      mapper = mapper_class.map_to_model(Widget.new, { category: { name: 'ByIdentifier' } })
+      mapper_class.map_to_model(Widget.new, { category: { name: 'ByIdentifier' } })
+    end
 
     assert_predicate mapper, :valid?, mapper.errors.inspect
     assert_equal category.id, mapper.record.category.id
