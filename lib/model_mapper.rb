@@ -746,8 +746,9 @@ module ModelMapper
   #   - collection: added to the loaded target, then the association's own `set_owner_attributes` sets
   #     the owner key on the record (and the `as:` type column). `add_to_target` alone links it only
   #     through an inverse ActiveRecord detects, which a scoped has_many or an explicit `foreign_key:`
-  #     lacks, and the autosave of an already-persisted element never sets the key. On an unsaved
-  #     parent the key is nil here and `insert_record` sets it at save.
+  #     lacks, and the autosave of an already-persisted element never sets the key. An unsaved parent
+  #     has no key to give yet — setting it would blank the element's current owner and fail a
+  #     required belongs_to — so it is left to `insert_record`, which sets it at save.
   #   - has_one: set as the association target; its autosave always writes the key.
   #
   # Strictly in-memory on purpose: associations are mapped inside `run_mapping`, before overall validity
@@ -761,7 +762,7 @@ module ModelMapper
     association = target.association(assoc.to_sym)
     if index
       association.add_to_target(record)
-      association.send(:set_owner_attributes, record)
+      association.send(:set_owner_attributes, record) if target.persisted?
     elsif association.reflection.belongs_to?
       target.public_send(:"#{assoc}=", record)
     else

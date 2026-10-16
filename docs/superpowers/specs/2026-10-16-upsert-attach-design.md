@@ -44,8 +44,10 @@ through.
 from 7.0 — the gem's floor — to 8.1), called with `send`. It is the method `build` itself uses, so it
 covers what a hand-written `record[reflection.foreign_key] = owner[reflection.active_record_primary_key]`
 does not: the polymorphic `as:` type column (tested), and composite keys (ActiveRecord 7.1+;
-reasoned from its source, not tested — the suite has no composite-key table). On an owner not yet saved it sets
-the key to `nil`; ActiveRecord's `insert_record` sets it again once the owner has its id (new owner →
+reasoned from its source, not tested — the suite has no composite-key table). It is skipped on an owner not yet
+saved: that owner has no id, so it would set the key to `nil` — blanking an element's current owner and
+failing a required `belongs_to` on it (`parts.0.widget: must exist`, found by the domain review) — while
+ActiveRecord's `insert_record` sets the key anyway once the owner has its id (new owner →
 `new_record_before_save` → `insert_record`).
 
 ## Assumptions

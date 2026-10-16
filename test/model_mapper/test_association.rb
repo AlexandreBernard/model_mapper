@@ -340,6 +340,36 @@ class UpsertPolyNoteMapper
 
 end
 
+# Same no-inverse has_many, onto an element that requires its owner.
+class UpsertRequiredPart < ActiveRecord::Base
+
+  self.table_name = 'parts'
+  belongs_to :widget, class_name: 'UpsertRequiredWidget', optional: false
+
+end
+
+class UpsertRequiredWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :parts, -> { order(:id) }, foreign_key: 'widget_id', class_name: 'UpsertRequiredPart'
+  accepts_nested_attributes_for :parts
+
+end
+
+class UpsertRequiredPartsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { UpsertRequiredPart.all }
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -700,6 +730,20 @@ class TestAssociation < Minitest::Test
     widget.save!
     note.reload
     assert_equal [widget.id, 'UpsertNoteWidget'], [note.noteable_id, note.noteable_type]
+  end
+
+  # An unsaved parent has no key to give yet: setting the element's owner key would blank it, and an
+  # element that requires its owner would then fail validation although the save would link it.
+  def test_upsert_has_many_without_inverse_moves_a_required_element_onto_a_new_parent
+    other  = UpsertRequiredWidget.create!(name: 'other')
+    part   = UpsertRequiredPart.create!(name: 'orig', widget: other)
+    widget = UpsertRequiredWidget.new(name: 'w')
+    mapper = UpsertRequiredPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    part.reload
+    assert_equal [widget.id, 'renamed'], [part.widget_id, part.name]
   end
 
   # --- map_if ---------------------------------------------------------------
