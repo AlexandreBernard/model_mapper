@@ -351,7 +351,9 @@ default ->(params) { params[:fallback_name] }
 ```
 
 A `default` or `allowing` lambda is `instance_exec`ed on the mapper and handed the source params when
-its signature accepts an argument — required or optional: `->(params = nil)` gets them too.
+its signature accepts an argument — required or optional: `->(params = nil)` gets them too. (The
+`allowing` of a `type :custom` attribute is a validator, always called with `(value, source_params)`:
+see [`:custom`](#custom).)
 
 ### `map_if`
 

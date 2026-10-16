@@ -84,6 +84,11 @@ both forms are present, the key as declared wins — including for a reference i
 `{ category: { id: nil, 'id' => 1 } }` is now a missing id where it used to find category 1. A list or a scalar where a section is expected still
 raises `TypeError`.
 
+A `default` or `allowing` lambda whose parameters are all optional or a splat (`->(params = nil)`,
+`->(*args)`, `proc { |a, b| }`) used to be called with no argument and is now handed the source
+params, as `required`, `map_if` and `authorize` hand theirs: `default ->(p = nil) { p ? x : y }` now
+returns `x`.
+
 ### Deprecated
 
 An explicit `null`, or an empty list on a multi-valued param, on a param without `nullable` is still
@@ -125,13 +130,13 @@ runs — keyed `<field>.<index>` for an array element — and `default_on_invali
 `required`, `default` and `allowing` picked a lambda's arguments from `Proc#arity`, which is negative
 as soon as the signature has an optional argument, so the same lambda was called differently by each:
 `->(params, extra = nil)` got `(params, target)` from `required` and raised `ArgumentError` under
-`default` and `allowing`, which handed it nothing. All three now count the arguments a lambda accepts,
-as `map_if` and `authorize` already did, and hand it that many of their own list — `(params, target)`
-for `required`, `(params)` for `default` and `allowing`; the receiver is unchanged (`required` calls
-the lambda, the other two `instance_exec` it on the mapper). `required -> { … }` and
-`required ->(params = nil) { … }`, which raised, now work. A `default` or `allowing` lambda with only
-optional or splat parameters (`->(params = nil)`, `->(*args)`, `proc { |a, b| }`) used to receive
-nothing and now receives the source params.
+`default` and `allowing`, which handed it nothing. All three now count the positional arguments a
+lambda accepts, as `map_if` and `authorize` already did, and hand it that many of their own list —
+`(params, target)` for `required`, `(params)` for `default` and `allowing`; the receiver is unchanged
+(`required` calls the lambda, the other two `instance_exec` it on the mapper). `required -> { … }`,
+`required ->(params = nil) { … }` and a rule with an optional keyword (`->(params, k: 1)`), which
+raised, now work. The `allowing` of a `type :custom` attribute is a validator and keeps its own call,
+`(value, source_params)`.
 
 ## 0.4.1
 
