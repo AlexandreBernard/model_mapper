@@ -290,6 +290,10 @@ required ->(params) { params[:code].nil? }
 required ->(params, target) { target.new_record? }
 ```
 
+The lambda is called (not `instance_exec`ed: `self` is where it was written) with as many of
+`(params, target)` as its signature accepts — an optional argument counts, so
+`->(params, target = nil)` gets both.
+
 ### `nullable` — clearing a value
 
 An **absent** key never touches the current value. A key sent with a **clearing request** is governed
@@ -345,6 +349,9 @@ default 'active'
 default -> { Time.current }
 default ->(params) { params[:fallback_name] }
 ```
+
+A `default` or `allowing` lambda is `instance_exec`ed on the mapper and handed the source params when
+its signature accepts an argument — required or optional: `->(params = nil)` gets them too.
 
 ### `map_if`
 

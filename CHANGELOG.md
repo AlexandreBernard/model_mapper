@@ -122,6 +122,17 @@ mapper and which `default_on_invalid` could not catch; `type :custom` handed it 
 such a string, or an array holding one, is now refused as an `InvalidFormatError` before its validator
 runs — keyed `<field>.<index>` for an array element — and `default_on_invalid` falls back on it.
 
+`required`, `default` and `allowing` picked a lambda's arguments from `Proc#arity`, which is negative
+as soon as the signature has an optional argument, so the same lambda was called differently by each:
+`->(params, extra = nil)` got `(params, target)` from `required` and raised `ArgumentError` under
+`default` and `allowing`, which handed it nothing. All three now count the arguments a lambda accepts,
+as `map_if` and `authorize` already did, and hand it that many of their own list — `(params, target)`
+for `required`, `(params)` for `default` and `allowing`; the receiver is unchanged (`required` calls
+the lambda, the other two `instance_exec` it on the mapper). `required -> { … }` and
+`required ->(params = nil) { … }`, which raised, now work. A `default` or `allowing` lambda with only
+optional or splat parameters (`->(params = nil)`, `->(*args)`, `proc { |a, b| }`) used to receive
+nothing and now receives the source params.
+
 ## 0.4.1
 
 ### Added — unified `association`

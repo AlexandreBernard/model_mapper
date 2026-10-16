@@ -27,6 +27,18 @@ module ModelMapper
       rule.parameters.count { |type, _| %i[req opt].include?(type) }
     end
 
+    # Run a user-supplied rule (`map_if`, `authorize`, `required`, `default`, `allowing`): a plain
+    # value answers for itself, a Proc gets as many of `args` as its signature accepts — read off
+    # `parameters`, so an optional argument counts and the answer is the same for every option. With a
+    # receiver the Proc is `instance_exec`ed on it — the mapper instance, so the record alias, the
+    # keyword context and the policies are in scope; without one it is `call`ed as a closure.
+    def self.call_rule(rule, receiver, args)
+      return rule unless rule.is_a?(Proc)
+
+      picked = args.first([acceptable_arity(rule), args.size].min)
+      receiver.nil? ? rule.call(*picked) : receiver.instance_exec(*picked, &rule)
+    end
+
     attr_reader :name
     attr_accessor :at_keys, :type_value, :field_value, :allowing_value, :required_value, :multiple_value, :assign_value,
                   :default_value, :default_on_invalid_value, :condition_value, :mapper_value, :with_value, :of_value,
@@ -275,19 +287,10 @@ module ModelMapper
       @at_keys || [@name]
     end
 
-    # Check if this param is required (handles both boolean and lambda)
+    # Check if this param is required (a boolean, or a Proc `call`ed with as many of
+    # `(params, target_object)` as it accepts)
     def required?(params, target_object)
-      case @required_value
-      when Proc
-        case @required_value.arity
-        when 1
-          @required_value.call(params)
-        else
-          @required_value.call(params, target_object)
-        end
-      else
-        @required_value
-      end
+      self.class.call_rule(@required_value, nil, [params, target_object])
     end
 
     # Whether this param's value is assigned to the target object (false ⇒ validation-only).
@@ -361,7 +364,7 @@ module ModelMapper
     def condition_met?(target_object, source_params, service_instance)
       return true if @condition_value.nil?
 
-      call_rule(@condition_value, service_instance, [target_object, source_params])
+      self.class.call_rule(@condition_value, service_instance, [target_object, source_params])
     end
 
     # Whether an authorization rule was declared at all. Held as nil when undeclared rather than
@@ -380,19 +383,7 @@ module ModelMapper
     def authorized?(target_object, source_params, service_instance, value = nil)
       return true if @authorize_value.nil?
 
-      call_rule(@authorize_value, service_instance, [target_object, source_params, value])
-    end
-
-    private
-
-    # Run a user-supplied rule (`map_if`, `authorize`): a plain value answers for itself, a Proc is
-    # `instance_exec`ed on the mapper instance — so the record alias, the keyword context and the
-    # policies are in scope — with as many of `args` as its signature accepts.
-    def call_rule(rule, service_instance, args)
-      return rule unless rule.is_a?(Proc)
-
-      count = [self.class.acceptable_arity(rule), args.size].min
-      service_instance.instance_exec(*args.first(count), &rule)
+      self.class.call_rule(@authorize_value, service_instance, [target_object, source_params, value])
     end
 
   end
