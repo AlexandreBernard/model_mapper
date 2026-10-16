@@ -1076,6 +1076,18 @@ class TestModelMapper < Minitest::Test
     end
   end
 
+  # The format holds, but `to_f` overflows: these were stored as Infinity and -Infinity, a value the
+  # Float::INFINITY path refuses.
+  def test_float_rejects_a_string_that_overflows
+    ['1e400', '-1e400', '9' * 400].each do |input|
+      widget  = Widget.new
+      service = FloatService.new(widget, { price: input })
+      error   = assert_raises(ModelMapper::ValidationError, input[0, 10]) { service.call }
+      assert_equal :float, error.first_error.expected_format, input[0, 10]
+      assert_nil widget.price, input[0, 10]
+    end
+  end
+
   # A real, finite Numeric skips the string format: a Rational renders as "1/2", which FLOAT_FORMAT rejects.
   def test_float_accepts_real_finite_numerics
     inputs   = [Rational(1, 2), Rational(4, 1), BigDecimal('1.5'), BigDecimal('-2')]

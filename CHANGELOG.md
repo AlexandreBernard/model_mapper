@@ -127,6 +127,8 @@ runs — keyed `<field>.<index>` for an array element — and `default_on_invali
 `"\u00001.5"` as `0.0`, with no error. Only ASCII whitespace (space, tab, newline, `\v`, `\f`, `\r`) is
 now trimmed, and the trimmed string is both checked and cast: a NUL anywhere, including a trailing one
 (`"12\u0000"`, accepted as `12` before), is an `InvalidFormatError`. `" 12 "` is still `12`.
+A float string that overflows (`"1e400"`, accepted as `Infinity`) is refused too, as a
+`Float::INFINITY` param already was.
 
 ## 0.4.1
 

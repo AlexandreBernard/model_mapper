@@ -873,11 +873,13 @@ module ModelMapper
     return value.to_f if value.is_a?(Numeric) && value.real? && value.finite?
 
     number = value.to_s.gsub(NUMBER_PADDING, '')
-    unless number.match?(FLOAT_FORMAT)
+    float  = number.to_f if number.match?(FLOAT_FORMAT)
+    # "1e400" matches the format but overflows to Infinity, which a Float::INFINITY param is refused as.
+    unless float&.finite?
       raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'), expected_format: :float)
     end
 
-    number.to_f
+    float
   end
 
   def valid_integer_value?(value, param_config, _source_params, _target_object)
