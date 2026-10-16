@@ -122,6 +122,20 @@ mapper and which `default_on_invalid` could not catch; `type :custom` handed it 
 such a string, or an array holding one, is now refused as an `InvalidFormatError` before its validator
 runs — keyed `<field>.<index>` for an array element — and `default_on_invalid` falls back on it.
 
+An upsert (`with` + `allowing`) updated an in-scope record without linking it in two cases. On a
+`belongs_to`, the record was set as the association target only, which ActiveRecord's save does not
+turn into a foreign key: `{ category: { id: 3, name: 'renamed' } }` renamed the category and left
+`category_id` nil. On a 1-N whose `has_many` has no inverse ActiveRecord can detect (a scoped
+association, an explicit `foreign_key:`), the element was added to the loaded target only, and the
+parent's save re-saved it without its owner key. A `belongs_to` upsert now goes through the
+association writer, and a 1-N element gets its owner key (and the `as:` type column) set from the
+parent — both in memory, so the map still writes nothing before the save.
+
+A 1-1 upsert refused any in-scope id differing from the current record, a `belongs_to` included, with
+`cannot_replace_association`. Replacing a `belongs_to` only moves the parent's foreign key and leaves
+the previous record untouched, so it is now accepted; a `has_one` replacement, which would nullify the
+old child at once, is still refused.
+
 ## 0.4.1
 
 ### Added — unified `association`
