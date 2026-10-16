@@ -125,8 +125,8 @@ runs — keyed `<field>.<index>` for an array element — and `default_on_invali
 A legacy `attribute :category_id do type :referential; allowing … end` stored both `@category_id` and
 `@category`, as the README says, but only an `association` in reference mode got the de-suffixed
 reader: `mapper.category` raised `NoMethodError`. A scalar `type :referential` param ending in `_id`
-now gets the `category` reader too (`nil` while the value is absent), and so does an `association`
-named `*_id`; a list (`multiple true` / `many: true`) gets none.
+now gets the `category` reader too (`nil` while the value is absent); a `type :referential` list
+(`multiple true`) gets none.
 
 ## 0.4.1
 

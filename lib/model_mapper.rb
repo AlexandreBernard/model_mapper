@@ -161,7 +161,7 @@ module ModelMapper
     #
     # Two kinds of param get NO reader, because they are never stored as an ivar: associations built via
     # a sub-mapper (`with`, assigned straight onto the target). A param ending in `_id` that resolves to a
-    # single record — a reference, or a legacy scalar `type :referential` — additionally gets the
+    # record — a reference, or a legacy scalar `type :referential` — additionally gets the
     # de-suffixed object reader (`category_id` ⇒ also `category`), since the run stores both (see
     # `run_mapping`). Never overrides a reader the class already defines.
     def define_param_readers(config)
@@ -169,9 +169,10 @@ module ModelMapper
         next if param_config.mapper?
 
         name = param_config.name.to_s
-        # A list (`multiple`) holds several records, not one, so it gets no de-suffixed object reader.
-        single_record = !param_config.multiple? &&
-                        (param_config.reference? || param_config.type_value == :referential)
+        # A `:referential` list holds several records, not one, so it gets no de-suffixed object reader.
+        # A reference keeps the reader whatever its cardinality, as it did before the legacy case joined.
+        single_record = param_config.reference? ||
+                        (param_config.type_value == :referential && !param_config.multiple?)
         readers = [name]
         readers << name.delete_suffix('_id') if single_record && name.end_with?('_id')
         readers.each do |reader|

@@ -287,7 +287,7 @@ class RefIdNamedMapper
 
 end
 
-# A 1-n reference declared under an `_id` name holds several records: no de-suffixed reader.
+# A 1-n reference declared under an `_id` name: 0.4.1 shipped its de-suffixed reader, and a fix keeps it.
 class RefIdNamedManyMapper
 
   include ModelMapper
@@ -616,8 +616,8 @@ class TestAssociation < Minitest::Test
     assert_respond_to RefIdNamedMapper.map_to_model(Widget.new, {}), :category
   end
 
-  def test_reference_many_named_with_id_gets_no_de_suffixed_reader
-    refute RefIdNamedManyMapper.method_defined?(:category)
+  def test_reference_many_named_with_id_keeps_the_de_suffixed_reader
+    assert RefIdNamedManyMapper.method_defined?(:category)
   end
 
   def test_enumerated_id_attribute_gets_no_de_suffixed_reader
