@@ -30,6 +30,11 @@ class TestParamConfig < Minitest::Test
     assert_equal :code, @config.field_value
   end
 
+  def test_identifier_sets_field_value
+    assert_output(nil, /`identifier` is deprecated/) { @config.identifier :code }
+    assert_equal :code, @config.field_value
+  end
+
   def test_allowing_sets_allowing_value
     @config.allowing [true, false]
     assert_equal [true, false], @config.allowing_value

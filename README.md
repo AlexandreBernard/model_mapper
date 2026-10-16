@@ -278,6 +278,7 @@ to `association` (`nullable:` and `immediate_write:` are also accepted as keywor
 | `of` | Symbol | `nil` | Element type for a `type :array` of **scalars** |
 | `multiple` | Bool | `false` | `:enumerated` only — accept an array of values |
 | `field` | Symbol | `:id` | **Deprecated** — use `id_field` |
+| `identifier` | Symbol | `:id` | **Deprecated** (its 0.4.1 name) — use `id_field` |
 | `condition` | Proc | `nil` | **Deprecated** — use `map_if` |
 
 ### `required`
@@ -789,6 +790,7 @@ removed in a later release. See `CHANGELOG.md`.
 | `type :array` + `with` (1‑N records) | `association :name, many: true do with … end` |
 | `type :array, of: :referential` | `association :name, many: true do allowing … end` |
 | `field :col` | `id_field :col` |
+| `identifier :col` (0.4.1) | `id_field :col` |
 | `condition -> { … }` | `map_if -> { … }` |
 | `at :a, :b` | `from :a, :b` |
 
