@@ -370,6 +370,59 @@ class UpsertRequiredPartsMapper
 
 end
 
+# Counts how often an `allowing` scope is evaluated, to pin that a blank or non-scalar id never reaches it.
+module ScopeCalls
+
+  class << self
+
+    attr_accessor :count
+
+  end
+
+end
+
+class CountingUpsertPartsMapper
+
+  include ModelMapper
+
+  map_model do
+    record_alias :widget
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { ScopeCalls.count += 1; Part.all }
+    end
+  end
+
+end
+
+class CountingRefCategoryMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category do
+      allowing -> { ScopeCalls.count += 1; Category.all }
+    end
+  end
+
+end
+
+# An `allowing` proc that fails on its own: its error is not a refusal of the element.
+class RaisingScopeUpsertMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { raise ModelMapper::InvalidValueError.new('scope', details: 'boom') }
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -453,6 +506,25 @@ class TestAssociation < Minitest::Test
     assert_equal category.id, mapper.widget.category.id
   end
 
+  # The two refusals carry different details: a non-scalar identifier is not "an unknown record".
+  def test_reference_refusals_name_their_reason
+    category = Category.create!(name: 'Listed', enabled: true)
+    listed   = RefCategoryMapper.map_to_model(Widget.new, { category: { id: [category.id] } })
+    unknown  = RefCategoryMapper.map_to_model(Widget.new, { category: { id: 0 } })
+
+    assert_equal I18n.t('errors.invalid_value_details.reference_id_not_scalar'), listed.errors['category.id'].details
+    assert_equal I18n.t('errors.invalid_value_details.invalid_referential'), unknown.errors['category.id'].details
+  end
+
+  # A section that names no identifier is a missing reference, whatever blank it carries.
+  def test_reference_blank_identifier_is_a_nil_error
+    [nil, '', []].each do |blank|
+      mapper = RefCategoryMapper.map_to_model(Widget.new, { category: { id: blank } })
+
+      assert_kind_of ModelMapper::InvalidNilValueError, mapper.errors['category.id'], "id: #{blank.inspect}"
+    end
+  end
+
   # --- 1-1 build ------------------------------------------------------------
 
   def test_build_one
@@ -532,6 +604,73 @@ class TestAssociation < Minitest::Test
 
     refute_predicate mapper, :valid?
     assert_includes mapper.errors.keys, 'parts.0.id'
+  end
+
+  # Same reasons as the reference path, recorded instead of raised.
+  def test_upsert_refusals_name_their_reason
+    part   = Part.create!(name: 'allowed')
+    mapper = UpsertPartsMapper.map_to_model(Widget.new, { parts: [{ id: [part.id] }, { id: 0 }] })
+
+    assert_equal I18n.t('errors.invalid_value_details.reference_id_not_scalar'), mapper.errors['parts.0.id'].details
+    assert_equal I18n.t('errors.invalid_value_details.invalid_referential'), mapper.errors['parts.1.id'].details
+  end
+
+  # Unlike a reference, an upsert element that names no identifier is a CREATE, not a refusal.
+  def test_upsert_blank_identifier_creates
+    ['', []].each do |blank|
+      mapper = UpsertPartsMapper.map_to_model(Widget.new, { parts: [{ id: blank, name: 'fresh' }] })
+
+      assert_predicate mapper, :valid?, "id: #{blank.inspect}"
+      assert_equal %w[fresh], mapper.widget.parts.map(&:name)
+      assert_nil mapper.widget.parts.first.id
+    end
+  end
+
+  # A singular upsert's refusal is keyed without an index.
+  def test_upsert_singular_rejects_out_of_scope_id_on_params_path
+    mapper = UpsertManualMapper.map_to_model(Widget.new, { manual: { id: 0, title: 'x' } })
+
+    refute_predicate mapper, :valid?
+    assert_equal I18n.t('errors.invalid_value_details.invalid_referential'), mapper.errors['manual.id'].details
+    assert_nil mapper.widget.manual
+  end
+
+  # The refusal is keyed on the configured identifier, not on a literal `id`.
+  def test_reference_refusal_is_keyed_on_a_custom_id_field
+    unknown = RefCategoryByNameMapper.map_to_model(Widget.new, { category: { name: 'nope' } })
+    blank   = RefCategoryByNameMapper.map_to_model(Widget.new, { category: { name: nil } })
+
+    assert_equal ['category.name'], unknown.errors.keys
+    assert_equal I18n.t('errors.invalid_value_details.invalid_referential'), unknown.errors['category.name'].details
+    assert_kind_of ModelMapper::InvalidNilValueError, blank.errors['category.name']
+  end
+
+  # A blank or non-scalar identifier is settled before the `allowing` scope is ever evaluated.
+  def test_scope_is_not_evaluated_without_a_scalar_identifier
+    ScopeCalls.count = 0
+    upsert = CountingUpsertPartsMapper.map_to_model(Widget.new,
+                                                    { parts: [{ name: 'a' }, { id: '', name: 'b' }, { id: [1], name: 'c' }] })
+    CountingRefCategoryMapper.map_to_model(Widget.new, { category: { id: [1] } })
+    CountingRefCategoryMapper.map_to_model(Widget.new, { category: { id: nil } })
+
+    assert_equal 0, ScopeCalls.count
+    assert_equal %w[a b], upsert.widget.parts.map(&:name)
+  end
+
+  # Only an upsert looks an identifier up: a build mapper (no `allowing`) builds whatever the element says.
+  def test_build_ignores_an_identifier
+    mapper = BuildPartsMapper.map_to_model(Widget.new, { parts: [{ id: 999, name: 'a' }] })
+
+    assert_predicate mapper, :valid?
+    assert_equal %w[a], mapper.widget.parts.map(&:name)
+    assert_nil mapper.widget.parts.first.id
+  end
+
+  # An error the `allowing` proc raises itself propagates; it is not recorded as a refusal of the element.
+  def test_upsert_does_not_swallow_an_error_raised_by_the_scope
+    assert_raises(ModelMapper::InvalidValueError) do
+      RaisingScopeUpsertMapper.map_to_model(Widget.new, { parts: [{ id: 1, name: 'x' }] })
+    end
   end
 
   # An in-scope id UPDATES that record in place (no duplicate) and attaches it to the parent — the
