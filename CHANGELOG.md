@@ -95,7 +95,7 @@ raises `TypeError`.
   **raises** `ModelMapper::SaveOptionRenamedError` at class load instead of warning, because it read
   as persistence (`save_to_model`). Migration: replace `save false` with `assign false`. (Distinct
   from `SaveOptionRemovedError`, which covers the earlier removal of the `map_to_model(save:)`
-  keyword.)
+  keyword.) The `ParamConfig#save?` predicate is renamed `assign?` with it, and has no alias.
 
 ### Deprecated
 
