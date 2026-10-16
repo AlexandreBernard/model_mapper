@@ -344,9 +344,10 @@ module ModelMapper
         next
       rescue StandardError => e
         # Errors from user-provided lambdas (e.g. allowing, required) that depend on
-        # previously-failed attributes. Only accumulate if there are already validation errors,
-        # otherwise re-raise as it's likely a genuine bug.
-        raise if validation_errors.empty?
+        # previously-failed attributes. Only accumulate if there are already validation errors — or a
+        # refusal pending at assignment, whose value is withheld below — otherwise re-raise as it's
+        # likely a genuine bug.
+        raise if validation_errors.empty? && withheld.empty?
 
         field = param_config.keys.join('.')
         validation_errors[field] = ModelMapper::InvalidValueError.new(field, details: e.message)

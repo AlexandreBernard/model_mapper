@@ -859,6 +859,27 @@ class TestImmediateWrite < Minitest::Test
     assert_nil other.reload.widget_id
   end
 
+  # A rule that trips over the withheld nil is collected like one that trips over a failed param: the
+  # refusal is pending, so the map does not raise.
+  def test_a_later_rule_dereferencing_a_withheld_value_is_collected
+    widget = Widget.create!
+    part = Part.create!(name: 'p')
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      attribute :price do
+        type :float
+        authorize -> { parts.any? }
+      end
+    end
+
+    result = klass.map_to_model(widget, { parts: [{ id: part.id }], price: 1.0 })
+    assert_equal %w[parts price], result.errors.keys.sort
+    assert_nil part.reload.widget_id
+  end
+
   def test_false_accepts_an_absent_key_and_an_ignored_null
     widget = Widget.create!
     part = Part.create!(name: 'p', widget:)

@@ -194,8 +194,9 @@ end
   as is. Under `immediate_write false`, a value that would be refused if it reached the writer as sent
   reads as `nil` to the params declared after it (their `map_if`, `authorize`, `allowing`, `required`,
   `default`), as a param that failed validation does, so nothing they decide rests on it; the hook and
-  everything after the loop read it as usual. An id that names no record is not a write: the ids writer raises `RecordNotFound` before
-  replacing anything, and that error is left to surface. `immediate_write` on a param declared
+  everything after the loop read it as usual. An id that names no record is not a write: the ids
+  writer raises `RecordNotFound` before replacing anything, and that error is left to surface.
+  `immediate_write` on a param declared
   `assign false` raises `ConfigurationError`: it is never assigned, so never written. A future release
   refuses by default; see
   [Deprecations](#a-reference-written-during-the-map). Replace such children in the caller, after the

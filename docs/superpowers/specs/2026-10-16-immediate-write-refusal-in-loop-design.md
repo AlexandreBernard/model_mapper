@@ -39,7 +39,14 @@ The forecast:
   the writer's own would (a has_one's `StrictLoadingViolationError`);
 - runs only for `false`: undeclared and `true` never refuse.
 
-Cost: one extra query per `immediate_write false` param whose association is not loaded, per map.
+A rule of a later param that trips over the withheld nil (`authorize -> { parts.any? }`) is collected
+as an error on that param, as it is when it trips over a param that failed validation: the loop's
+"re-raise unless an error is already recorded" rule also counts a refusal pending at assignment.
+Without this, the non-raising `map_to_model` raised `NoMethodError` where 8e41916 returned the
+`parts` refusal.
+
+Cost: per `immediate_write false` param whose association is not loaded, one extra read of the
+current records, and for an ids writer whose ids differ, a second `COUNT` (the writer's own lookup).
 
 ## Assumptions
 
