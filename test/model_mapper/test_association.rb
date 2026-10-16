@@ -423,6 +423,22 @@ class RaisingScopeUpsertMapper
 
 end
 
+# Upsert looking its elements up by name instead of id.
+class UpsertPartsByNameMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      id_field :name
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -655,6 +671,13 @@ class TestAssociation < Minitest::Test
 
     assert_equal 0, ScopeCalls.count
     assert_equal %w[a b], upsert.widget.parts.map(&:name)
+  end
+
+  # The upsert's refusal is keyed on the configured identifier too.
+  def test_upsert_refusal_is_keyed_on_a_custom_id_field
+    mapper = UpsertPartsByNameMapper.map_to_model(Widget.new, { parts: [{ name: 'nope' }, { name: [1] }] })
+
+    assert_equal %w[parts.0.name parts.1.name], mapper.errors.keys.sort
   end
 
   # Only an upsert looks an identifier up: a build mapper (no `allowing`) builds whatever the element says.
