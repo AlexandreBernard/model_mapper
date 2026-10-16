@@ -306,9 +306,9 @@ class TestImmediateWrite < Minitest::Test
     assert_equal widget.id, b.reload.widget_id
   end
 
-  # A child attached between the check and the assignment (stood in for by a hook) is not detached:
-  # the writer diffs against the records the check read.
-  def test_child_attached_after_the_check_is_left_alone
+  # The check runs at assignment, after before_assignation: a child the hook attaches is part of the
+  # current set, so a value that would detach it is a write, and is refused without detaching it.
+  def test_child_attached_by_before_assignation_is_seen_by_the_check
     widget = Widget.create!
     part = Part.create!(name: 'a', widget:)
     late = nil
@@ -322,9 +322,76 @@ class TestImmediateWrite < Minitest::Test
     end
 
     result = klass.map_to_model(widget, { parts: [{ id: part.id }], price: 'abc' })
-    assert_equal ['price'], result.errors.keys
+    assert_equal %w[parts price], result.errors.keys.sort
     assert_equal widget.id, late.reload.widget_id
     assert_equal widget.id, part.reload.widget_id
+  end
+
+  # --- before_assignation: what it leaves in the params is what is checked ---
+
+  def test_a_reference_replaced_by_before_assignation_is_checked
+    widget = Widget.create!
+    old = Part.create!(name: 'a', widget:)
+    new = Part.create!(name: 'b')
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      before_assignation { |_, validated| validated[:parts] = [new] }
+    end
+
+    result = klass.map_to_model(widget, { parts: [{ id: old.id }] })
+    assert_equal ['parts'], result.errors.keys
+    assert_equal refusal, result.errors['parts'].details
+    assert_equal widget.id, old.reload.widget_id
+    assert_nil new.reload.widget_id
+  end
+
+  def test_ids_added_by_before_assignation_are_checked
+    widget = Widget.create!
+    old = Part.create!(name: 'a', widget:)
+    new = Part.create!(name: 'b')
+    klass = ids_mapper(false)
+    klass.map_model { before_assignation { |_, validated| validated['part_ids'] = [new.id] } }
+
+    result = klass.map_to_model(widget, {})
+    assert_equal ['part_ids'], result.errors.keys
+    assert_equal widget.id, old.reload.widget_id
+    assert_nil new.reload.widget_id
+  end
+
+  def test_a_write_removed_by_before_assignation_is_not_refused
+    widget = Widget.create!
+    new = Part.create!(name: 'b')
+    klass = parts_mapper(false)
+    klass.map_model { before_assignation { |_, validated| validated.delete(:parts) } }
+
+    assert klass.map_to_model(widget, { parts: [{ id: new.id }] }).valid?
+    assert_nil new.reload.widget_id
+  end
+
+  # Raised by ActiveRecord whatever comes before it, as it is without the check: an earlier param in
+  # error must not turn it into a validation error.
+  def test_strict_loading_one_reference_raises_after_an_earlier_error
+    widget = Widget.create!
+    manual = Manual.create!(title: 'm', widget:)
+    other = Manual.create!(title: 'o')
+
+    [:undeclared, false, true].each do |immediate_write|
+      klass = mapper do
+        attribute :price do type :float end
+        association :manual do
+          allowing -> { Manual.all }
+          immediate_write(immediate_write) unless immediate_write == :undeclared
+        end
+      end
+      strict = Widget.strict_loading.find(widget.id)
+      assert_raises(ActiveRecord::StrictLoadingViolationError, immediate_write.inspect) do
+        klass.map_to_model(strict, { price: 'abc', manual: { id: other.id } })
+      end
+    end
+    assert_equal widget.id, manual.reload.widget_id
   end
 
   # ActiveRecord's own has_one replace raises on a strict_loading owner; the check neither hides nor
@@ -540,19 +607,19 @@ class TestImmediateWrite < Minitest::Test
     assert_equal [part], widget.parts.to_a
   end
 
-  def test_false_with_assign_false_validates_only
+  # A validation-only reference assigns nothing, so it never writes and never warns.
+  def test_assign_false_reference_neither_writes_nor_warns
     klass = mapper do
       association :parts, many: true do
         allowing -> { Part.all }
         assign false
-        immediate_write false
       end
     end
     widget = Widget.create!
     old = Part.create!(name: 'a', widget:)
     new = Part.create!(name: 'b')
 
-    assert klass.map_to_model(widget, { parts: [{ id: new.id }] }).valid?
+    assert_output(nil, '') { assert klass.map_to_model(widget, { parts: [{ id: new.id }] }).valid? }
     assert_equal widget.id, old.reload.widget_id
   end
 
@@ -696,6 +763,22 @@ class TestImmediateWrite < Minitest::Test
       assert ids_mapper(false) {}.map_to_model(widget, { part_ids: [b.id.to_s, '', a.id.to_s, nil] }).valid?
     end
     assert_equal widget.id, a.reload.widget_id
+  end
+
+  # The ids writer raises RecordNotFound on an unknown id before replacing anything: no write, so
+  # neither a refusal nor a warning stands in for ActiveRecord's own error.
+  def test_an_unknown_id_is_left_to_activerecord
+    widget = Widget.create!
+    part = Part.create!(name: 'a', widget:)
+
+    [:undeclared, false, true].each do |immediate_write|
+      assert_output(nil, '') do
+        assert_raises(ActiveRecord::RecordNotFound, immediate_write.inspect) do
+          ids_mapper(immediate_write).map_to_model(widget, { part_ids: [part.id, 999_999] })
+        end
+      end
+    end
+    assert_equal widget.id, part.reload.widget_id
   end
 
   def test_ids_on_a_new_parent_are_assigned_in_memory
@@ -864,6 +947,37 @@ class TestImmediateWrite < Minitest::Test
     end
 
     assert_raises(ModelMapper::ConfigurationError) { klass.map_to_model(Widget.new, {}) }
+  end
+
+  # A validation-only param is never assigned, so `immediate_write` would govern nothing.
+  def test_rejects_it_with_assign_false
+    sub_declarations = {
+      'reference' => proc do
+        association :parts, many: true do
+          allowing -> { Part.all }
+          assign false
+          immediate_write false
+        end
+      end,
+      'ids attribute' => proc do
+        attribute :part_ids, immediate_write: true do assign false end
+      end
+    }
+    sub_declarations.each do |label, declaration|
+      klass = mapper(&declaration)
+      assert_raises(ModelMapper::ConfigurationError, label) { klass.map_to_model(Widget.new, {}) }
+    end
+  end
+
+  def test_rejects_it_when_a_child_turns_assign_off
+    parent = parts_mapper(false)
+    child = Class.new(parent) do
+      map_model do
+        association :parts, many: true do assign false end
+      end
+    end
+
+    assert_raises(ModelMapper::ConfigurationError) { child.map_to_model(Widget.new, {}) }
   end
 
   def test_accepts_it_on_an_ids_attribute

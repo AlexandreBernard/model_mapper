@@ -188,9 +188,13 @@ end
   an `of :integer` attribute already refuses a blank element itself), and an `*_ids` attribute that is
   not a collection's ids writer on the record (a plain accessor) is left alone.
 
-  The check runs when the value is validated. A `before_assignation` hook that replaces a guarded
-  value in the params it receives is not checked again: the replacement is assigned as the hook
-  wrote it. A future release refuses by default; see
+  The check runs at assignment, after `before_assignation`, on the params as the hook left them: a
+  value the hook replaces or adds for a guarded param is checked like a sent one, and one it removes is
+  not. A key the hook adds for a param that is not declared, or declared `assign false`, is assigned
+  as is. An id that names no record is not a write: the ids writer raises `RecordNotFound` before
+  replacing anything, and that error is left to surface. `immediate_write` on a param declared
+  `assign false` raises `ConfigurationError`: it is never assigned, so never written. A future release
+  refuses by default; see
   [Deprecations](#a-reference-written-during-the-map). Replace such children in the caller, after the
   map succeeded, when the write must wait for validation.
 - **Error reporting differs by mode for 1‑N** (worth knowing): a 1‑N **reference** fails fast — the

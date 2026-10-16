@@ -331,8 +331,6 @@ module ModelMapper
           end
         end
         value, default_holder = validate_param(param_config, raw_value, source_params, target_object, allow_nil) unless cleared
-        # Only a value that will be assigned can write: a skipped nil never reaches the writer.
-        guard_immediate_write!(target_object, param_config, value) if param_config.assign? && (cleared || !value.nil?)
 
         if param_config.authorize? && !resolved_write_authorized?(param_config, source_params, target_object,
                                                                    value, cleared, default_holder)
@@ -390,6 +388,7 @@ module ModelMapper
     # before_assignation runs on the validated subset, so it must tolerate partial data (don't
     # dereference values that may have failed to map).
     instance_exec(source_params, validated_params, &config.before_assignation_hook) if config.before_assignation_hook
+    guard_immediate_writes!(target_object, config, validated_params, validation_errors, errored_fields)
     assign_to_target(target_object, validated_params)
 
     # Association/array attributes: build the nested record(s) on the target and run their sub-mappers,
@@ -406,6 +405,29 @@ module ModelMapper
   # has_many and HABTM insert/update/delete rows) — during the map, before validity is known, with no
   # rollback. `immediate_write` decides: false refuses the value, true accepts it, undeclared accepts it
   # with a deprecation warning. A value equal to the current one writes nothing, so it always passes.
+  #
+  # Checked at assignment, on the params as before_assignation left them, so what is checked is what the
+  # writer receives: a hook's replacement included, record ids already read off their records, and
+  # nothing for a key that is absent or a skipped nil. Outside the validation loop, so an error the check
+  # raises (a has_one's StrictLoadingViolationError) propagates as the writer's own would. A refused
+  # param is left out of the assignment and reported like a mapper error; its reader then returns nil.
+  # Only a declared, assignable param is governed: a key a hook adds for anything else is assigned as is.
+  def guard_immediate_writes!(target, config, validated_params, validation_errors, errored_fields)
+    assignable = config.params.each_value.select(&:assign?)
+                       .to_h { |param_config| [param_config.name.to_s, param_config] }
+
+    validated_params.keys.each do |key|
+      next unless (param_config = assignable[key.to_s])
+
+      guard_immediate_write!(target, param_config, validated_params[key])
+    rescue ModelMapper::InvalidValueError => e
+      validated_params.delete(key)
+      validation_errors[e.field] = e
+      errored_fields << param_config.name.to_s
+      instance_variable_set(:"@#{param_config.name}", nil)
+    end
+  end
+
   def guard_immediate_write!(target, param_config, value)
     return if param_config.immediate_write_value == true
     return unless immediate_write?(target, param_config, value)
@@ -461,9 +483,10 @@ module ModelMapper
   end
 
   # Mirrors ActiveRecord's ids writer, which drops blank ids, casts the others to the key type (column by
-  # column for a composite key) and replaces the collection with the records holding those keys. A record
-  # element (the deprecated `of :referential` validates into records) is assigned as its `id` (see
-  # run_mapping), so it is read the same way here.
+  # column for a composite key) and replaces the collection with the records holding those keys — unless
+  # one of them names no record, when it raises RecordNotFound before replacing anything. The deprecated
+  # `of :referential` validates into records, but they are assigned as their ids (see run_mapping), and
+  # those ids are what is read here.
   def ids_write?(target, reflection, value)
     columns = Array(reflection.association_primary_key)
     types = columns.map { |column| reflection.klass.type_for_attribute(column) }
@@ -473,10 +496,13 @@ module ModelMapper
     # `attributes`, not `public_send`/`read_attribute`: under a composite key both read "id" as the whole key.
     key_of = ->(record) { columns.one? ? record.attributes[columns.first] : record.attributes.values_at(*columns) }
 
-    ids = Array(value).map { |id| id.is_a?(ActiveRecord::Base) ? id.id : id }.reject(&:blank?).map(&cast)
+    ids = Array(value).reject(&:blank?).map(&cast)
     association = target.association(reflection.name)
     current = current_association_records(association, reflection).reject(&:new_record?).map(&key_of)
-    collection_keys(association, ids) != collection_keys(association, current)
+    return false if collection_keys(association, ids) == collection_keys(association, current)
+
+    # The writer's own lookup: `klass.where(key => ids)`, every distinct id matched by one record.
+    reflection.klass.where(reflection.association_primary_key => ids).count == ids.uniq.size
   end
 
   # ActiveRecord's replace diffs a has_many with Array#- (a repeated record changes nothing), but a
