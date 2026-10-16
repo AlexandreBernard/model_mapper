@@ -122,6 +122,12 @@ mapper and which `default_on_invalid` could not catch; `type :custom` handed it 
 such a string, or an array holding one, is now refused as an `InvalidFormatError` before its validator
 runs — keyed `<field>.<index>` for an array element — and `default_on_invalid` falls back on it.
 
+A legacy `attribute :category_id do type :referential; allowing … end` stored both `@category_id` and
+`@category`, as the README says, but only an `association` in reference mode got the de-suffixed
+reader: `mapper.category` raised `NoMethodError`. A scalar `type :referential` param ending in `_id`
+now gets the `category` reader too (`nil` while the value is absent), and so does an `association`
+named `*_id`; a list (`multiple true` / `many: true`) gets none.
+
 ## 0.4.1
 
 ### Added — unified `association`
