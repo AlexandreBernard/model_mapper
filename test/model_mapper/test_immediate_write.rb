@@ -723,18 +723,20 @@ class TestImmediateWrite < Minitest::Test
     end
   end
 
-  # `[]` is skipped like an absent key and assigns nothing; emptying takes `nullable true` and a null.
+  # Without `nullable`, a clearing request (`null` or `[]`) is skipped like an absent key and assigns
+  # nothing; under `nullable true` it clears, which is a write.
   def test_false_refuses_emptying_through_ids
     widget = Widget.create!
     part = Part.create!(name: 'a', widget:)
 
-    assert ids_mapper(false).map_to_model(widget, { part_ids: [] }).valid?
+    assert_output(nil, /empty list/) { assert ids_mapper(false).map_to_model(widget, { part_ids: [] }).valid? }
     clearing = ids_mapper(false) do
       type :array
       of :integer
       nullable true
     end
     assert_equal ['part_ids'], clearing.map_to_model(widget, { part_ids: nil }).errors.keys
+    assert_equal ['part_ids'], clearing.map_to_model(widget, { part_ids: [] }).errors.keys
     assert_equal widget.id, part.reload.widget_id
   end
 
