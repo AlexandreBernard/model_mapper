@@ -56,8 +56,19 @@ ActiveRecord's `insert_record` sets the key anyway once the owner has its id (ne
   inverse path already did; the `allowing` scope is what bounds it.
 - A belongs_to replacement leaves the previous record untouched (not destroyed, not updated).
 - has_many `:through` upserts are out of scope (unchanged; never supported by this path).
+- A has_many with a `where` scope (`-> { where(name: 'spare') }`) gets the owner key only, not the
+  scope's create attributes: an in-scope (`allowing`) element that does not match the association's
+  `where` is linked to the parent but stays outside the association. Before this change it was not
+  linked at all. Making `allowing` consistent with the association's scope is the caller's part.
 
 ## Owner may reverse
+
+- **A where-scoped has_many element outside the scope** (found by the adversarial review). Chosen:
+  set the owner key only — the element is linked but not in the association (`spare_parts` stays
+  `[]`, `part.widget_id` = the parent). Other options: apply the scope's create attributes too, as
+  `build` does — the element joins the association, but the upsert rewrites `name` to `'spare'`, a
+  value the payload never sent; or refuse such an element with a params-path error (`parts.0.id`) by
+  checking it in memory against the scope's `where` values — no write, a new i18n key.
 
 - **How the has_many key is set.** Chosen: the association's private `set_owner_attributes`. Other
   option: the reflection's `foreign_key` / `active_record_primary_key`, public API only. On the
