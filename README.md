@@ -790,9 +790,11 @@ removed in a later release. See `CHANGELOG.md`.
 | `type :array` + `with` (1‑N records) | `association :name, many: true do with … end` |
 | `type :array, of: :referential` | `association :name, many: true do allowing … end` |
 | `field :col` | `id_field :col` |
-| `identifier :col` (0.4.1) | `id_field :col` |
 | `condition -> { … }` | `map_if -> { … }` |
 | `at :a, :b` | `from :a, :b` |
+
+`identifier :col`, the name 0.4.1 gave `id_field`, is deprecated since the release after it: it
+still works and warns at each declaration. Replace it with `id_field :col`.
 
 `type :array` with a scalar `of` (`:string`, `:integer`, `:float`, `:date`, `:boolean`,
 `:enumerated`, `:custom`, `:any`) is **not** deprecated.
