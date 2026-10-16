@@ -122,6 +122,12 @@ mapper and which `default_on_invalid` could not catch; `type :custom` handed it 
 such a string, or an array holding one, is now refused as an `InvalidFormatError` before its validator
 runs — keyed `<field>.<index>` for an array element — and `default_on_invalid` falls back on it.
 
+`type :integer` and `type :float` checked their format on the `strip`ped string but cast the raw one.
+`strip` removes a NUL, `to_i`/`to_f` do not skip it, so `"\u000012"` was accepted as `0` and
+`"\u00001.5"` as `0.0`, with no error. Only ASCII whitespace (space, tab, newline, `\v`, `\f`, `\r`) is
+now trimmed, and the trimmed string is both checked and cast: a NUL anywhere, including a trailing one
+(`"12\u0000"`, accepted as `12` before), is an `InvalidFormatError`. `" 12 "` is still `12`.
+
 ## 0.4.1
 
 ### Added — unified `association`
