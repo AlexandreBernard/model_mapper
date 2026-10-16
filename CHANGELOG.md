@@ -122,6 +122,14 @@ mapper and which `default_on_invalid` could not catch; `type :custom` handed it 
 such a string, or an array holding one, is now refused as an `InvalidFormatError` before its validator
 runs — keyed `<field>.<index>` for an array element — and `default_on_invalid` falls back on it.
 
+A value `immediate_write false` refused was refused at assignment, after the whole validation loop, so
+the params declared after it had already read it through its reader: a `map_if`, `authorize`,
+`allowing`, `required` or `default` was weighed on a value that never landed. On a persisted record,
+`parts` refused followed by `association :manual do immediate_write true; map_if -> { parts.present? } end`
+still mapped `manual`, and ActiveRecord wrote it to the database during the map. Such a value is now
+read as `nil` by the params declared after it, as a param that failed validation is; the refusal
+itself still happens at assignment, after `before_assignation`, which sees the value as before.
+
 ## 0.4.1
 
 ### Added — unified `association`

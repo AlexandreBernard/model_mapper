@@ -191,7 +191,10 @@ end
   The check runs at assignment, after `before_assignation`, on the params as the hook left them: a
   value the hook replaces or adds for a guarded param is checked like a sent one, and one it removes is
   not. A key the hook adds for a param that is not declared, or declared `assign false`, is assigned
-  as is. An id that names no record is not a write: the ids writer raises `RecordNotFound` before
+  as is. Under `immediate_write false`, a value that would be refused if it reached the writer as sent
+  reads as `nil` to the params declared after it (their `map_if`, `authorize`, `allowing`, `required`,
+  `default`), as a param that failed validation does, so nothing they decide rests on it; the hook and
+  everything after the loop read it as usual. An id that names no record is not a write: the ids writer raises `RecordNotFound` before
   replacing anything, and that error is left to surface. `immediate_write` on a param declared
   `assign false` raises `ConfigurationError`: it is never assigned, so never written. A future release
   refuses by default; see

@@ -72,6 +72,19 @@ class IwValidatedWidget < ActiveRecord::Base
 
 end
 
+# A parent whose has_many raises on read while `failing` is set.
+class IwFailingWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  class << self
+
+    attr_accessor :failing
+
+  end
+  has_many :parts, -> { raise ArgumentError, 'unreadable' if IwFailingWidget.failing; all }, foreign_key: 'widget_id'
+
+end
+
 # Assigning a has_one/has_many/HABTM reference on a persisted record is written to the database by
 # ActiveRecord immediately, during the map. Undeclared, it still happens but warns; `immediate_write
 # false` refuses it; `immediate_write true` accepts it silently.
@@ -557,6 +570,293 @@ class TestImmediateWrite < Minitest::Test
 
     result = parts_mapper(false).map_to_model(widget, { parts: [{ id: part.id }] })
     assert_nil result.parts
+  end
+
+  # A refusal is known before the params declared after it are weighed: their rules read the refused
+  # param as nil, as they read a param that failed validation, and nothing they gate is written.
+  def test_false_refusal_is_not_readable_by_a_later_map_if
+    widget = Widget.create!
+    part = Part.create!(name: 'p')
+    manual = Manual.create!(title: 'm')
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      association :manual do
+        allowing -> { Manual.all }
+        immediate_write true
+        map_if -> { parts.present? }
+      end
+    end
+
+    result = klass.map_to_model(widget, { parts: [{ id: part.id }], manual: { id: manual.id } })
+    assert_equal ['parts'], result.errors.keys
+    assert_nil part.reload.widget_id
+    assert_nil manual.reload.widget_id
+  end
+
+  def test_false_refusal_does_not_authorize_a_later_param
+    widget = Widget.create!
+    part = Part.create!(name: 'p')
+    manual = Manual.create!(title: 'm')
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      association :manual do
+        allowing -> { Manual.all }
+        immediate_write true
+        authorize -> { parts.present? }
+      end
+    end
+
+    result = klass.map_to_model(widget, { parts: [{ id: part.id }], manual: { id: manual.id } })
+    assert_equal %w[manual parts], result.errors.keys.sort
+    assert_nil part.reload.widget_id
+    assert_nil manual.reload.widget_id
+  end
+
+  def test_false_value_that_writes_nothing_is_readable_by_a_later_map_if
+    widget = Widget.create!
+    part = Part.create!(name: 'p', widget:)
+    manual = Manual.create!(title: 'm')
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      association :manual do
+        allowing -> { Manual.all }
+        immediate_write true
+        map_if -> { parts.present? }
+      end
+    end
+
+    assert klass.map_to_model(widget, { parts: [{ id: part.id }], manual: { id: manual.id } }).valid?
+    assert_equal widget.id, manual.reload.widget_id
+  end
+
+  # Withheld from the params declared after it only: before_assignation still reads the value.
+  def test_before_assignation_reads_a_value_false_will_refuse
+    widget = Widget.create!
+    part = Part.create!(name: 'p')
+    seen = :unset
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      before_assignation { |*| seen = parts }
+    end
+
+    assert_equal ['parts'], klass.map_to_model(widget, { parts: [{ id: part.id }] }).errors.keys
+    assert_equal [part], seen
+  end
+
+  def test_false_ids_of_records_are_withheld_as_the_ids_the_writer_receives
+    widget = Widget.create!
+    part = Part.create!(name: 'p')
+    other = Manual.create!(title: 'm')
+    klass = mapper do
+      attribute :part_ids do
+        type :array
+        of :referential
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      association :manual do
+        allowing -> { Manual.all }
+        immediate_write true
+        map_if -> { part_ids.present? }
+      end
+    end
+
+    result = nil
+    capture_io { result = klass.map_to_model(widget, { part_ids: [part.id], manual: { id: other.id } }) }
+    assert_equal ['part_ids'], result.errors.keys
+    assert_nil other.reload.widget_id
+  end
+
+  def test_false_integer_ids_are_withheld
+    widget = Widget.create!
+    part = Part.create!(name: 'p')
+    other = Manual.create!(title: 'm')
+    klass = mapper do
+      attribute :part_ids do
+        type :array
+        of :integer
+        immediate_write false
+      end
+      association :manual do
+        allowing -> { Manual.all }
+        immediate_write true
+        map_if -> { part_ids.present? }
+      end
+    end
+
+    result = klass.map_to_model(widget, { part_ids: [part.id], manual: { id: other.id } })
+    assert_equal ['part_ids'], result.errors.keys
+    assert_nil other.reload.widget_id
+  end
+
+  def test_false_clearing_is_withheld
+    widget = Widget.create!
+    Part.create!(name: 'p', widget:)
+    other = Manual.create!(title: 'm')
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        nullable true
+        immediate_write false
+      end
+      association :manual do
+        allowing -> { Manual.all }
+        immediate_write true
+        map_if -> { !parts.nil? }
+      end
+    end
+
+    result = klass.map_to_model(widget, { parts: nil, manual: { id: other.id } })
+    assert_equal ['parts'], result.errors.keys
+    assert_nil other.reload.widget_id
+  end
+
+  def test_false_default_is_withheld
+    widget = Widget.create!
+    Part.create!(name: 'a', widget:)
+    Part.create!(name: 'b')
+    other = Manual.create!(title: 'm')
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        default -> { Part.where(name: 'b').to_a }
+        immediate_write false
+      end
+      association :manual do
+        allowing -> { Manual.all }
+        immediate_write true
+        map_if -> { parts.present? }
+      end
+    end
+
+    result = klass.map_to_model(widget, { manual: { id: other.id } })
+    assert_equal ['parts'], result.errors.keys
+    assert_nil other.reload.widget_id
+  end
+
+  # Only `false` refuses: an undeclared or `true` write lands, so the params after it read it.
+  def test_undeclared_and_true_writes_stay_readable_by_a_later_map_if
+    [:undeclared, true].each do |immediate_write|
+      widget = Widget.create!
+      part = Part.create!(name: 'p')
+      other = Manual.create!(title: 'm')
+      klass = mapper do
+        association :parts, many: true do
+          allowing -> { Part.all }
+          immediate_write(immediate_write) unless immediate_write == :undeclared
+        end
+        association :manual do
+          allowing -> { Manual.all }
+          immediate_write true
+          map_if -> { parts.present? }
+        end
+      end
+
+      result = nil
+      capture_io { result = klass.map_to_model(widget, { parts: [{ id: part.id }], manual: { id: other.id } }) }
+      assert result.valid?, immediate_write.inspect
+      assert_equal widget.id, other.reload.widget_id, immediate_write.inspect
+    end
+  end
+
+  # A loaded association is compared as loaded, like the check at assignment does: a row added behind
+  # its back is not part of it.
+  def test_forecast_reads_a_loaded_association_as_loaded
+    widget = Widget.create!
+    part = Part.create!(name: 'p', widget:)
+    widget.parts.load
+    Part.create!(name: 'behind', widget_id: widget.id)
+    other = Manual.create!(title: 'm')
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      association :manual do
+        allowing -> { Manual.all }
+        immediate_write true
+        map_if -> { parts.present? }
+      end
+    end
+
+    assert klass.map_to_model(widget, { parts: [{ id: part.id }], manual: { id: other.id } }).valid?
+    assert_equal widget.id, other.reload.widget_id
+  end
+
+  def test_false_unchanged_one_reference_is_readable_by_a_later_map_if
+    current = Manual.create!(title: 'm', widget: Widget.create!)
+    widget = Widget.find(current.widget_id)
+    part = Part.create!(name: 'p')
+    klass = mapper do
+      association :manual do
+        allowing -> { Manual.all }
+        immediate_write false
+      end
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write true
+        map_if -> { manual.present? }
+      end
+    end
+
+    assert klass.map_to_model(widget, { manual: { id: current.id }, parts: [{ id: part.id }] }).valid?
+    assert_equal widget.id, part.reload.widget_id
+  end
+
+  # The forecast never raises: an error reading the current records surfaces at assignment, after
+  # before_assignation, as the writer's own would.
+  def test_an_error_in_the_forecast_surfaces_at_assignment
+    widget = IwFailingWidget.find(Widget.create!.id)
+    part = Part.create!(name: 'p')
+    ran = false
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      before_assignation { |*| ran = true }
+    end
+
+    IwFailingWidget.failing = true
+    assert_raises(ArgumentError) { klass.map_to_model(widget, { parts: [{ id: part.id }] }) }
+    assert ran
+  ensure
+    IwFailingWidget.failing = false
+  end
+
+  # The accepted asymmetry: the params after it weighed nil, even when the hook then removes the value.
+  def test_a_forecast_refusal_the_hook_removes_was_still_nil_to_later_params
+    widget = Widget.create!
+    part = Part.create!(name: 'p')
+    other = Manual.create!(title: 'm')
+    klass = mapper do
+      association :parts, many: true do
+        allowing -> { Part.all }
+        immediate_write false
+      end
+      association :manual do
+        allowing -> { Manual.all }
+        immediate_write true
+        map_if -> { parts.present? }
+      end
+      before_assignation { |_, validated| validated.delete(:parts) }
+    end
+
+    assert klass.map_to_model(widget, { parts: [{ id: part.id }], manual: { id: other.id } }).valid?
+    assert_nil part.reload.widget_id
+    assert_nil other.reload.widget_id
   end
 
   def test_false_accepts_an_absent_key_and_an_ignored_null

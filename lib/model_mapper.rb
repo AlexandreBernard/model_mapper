@@ -285,6 +285,7 @@ module ModelMapper
     validated_params = {}
     validation_errors = {}
     errored_fields = [] # param names that produced a mapper error — used to dedup record errors
+    withheld = {} # param name => validated value whose ivar waits for the loop's end (see below)
     config.params.each do |param_name, param_config|
       # Skip param if condition is not met
       next unless param_config.condition_met?(target_object, source_params, self)
@@ -353,33 +354,25 @@ module ModelMapper
         next
       end
 
-      # Store as instance variable for use by later attributes/defaults/hooks in the same mapping and
-      # by the readers auto-defined in `map_model` (e.g. an `association :call_origin` resolved here is
-      # read by name in a later attribute's `allowing`/`default`). A resolved reference whose param
-      # ends in `_id` also stores the de-suffixed object (`@company_id` + `@company`).
-      if defined?(ActiveRecord::Base) && value.is_a?(ActiveRecord::Base) && param_name.to_s.end_with?('_id')
-        instance_variable_set(:"@#{param_name}", value.id)
-        instance_variable_set(:"@#{param_name.to_s.delete_suffix('_id')}", value)
+      # Skip nil values when not required — unless the payload asked to clear the value. Only an
+      # assignable param enters the assignment hash.
+      assigned = param_config.assign? && !(value.nil? && allow_nil && !cleared)
+
+      # A value `immediate_write false` will refuse at assignment if it reaches the writer as is: its
+      # ivar is withheld until the loop ends, so the rules of the params declared after this one read it
+      # as nil — as they read a param that failed validation — instead of weighing a value that is
+      # about to be refused. The refusal itself stays at assignment (guard_immediate_writes!).
+      if assigned && param_config.immediate_write_value == false &&
+         immediate_write_foreseen?(target_object, param_config, assignment_value(param_config, value))
+        withheld[param_name] = value
       else
-        instance_variable_set(:"@#{param_name}", value)
+        store_param_ivars(param_name, value)
       end
+      next unless assigned
 
-      # Skip nil values when not required — unless the payload asked to clear the value
-      next if value.nil? && allow_nil && !cleared
-
-      # Only include in the assignment hash when this param is assignable
-      next unless param_config.assign?
-
-      # For referential types, extract the ID for assignment (scalar → id, array → array of ids).
-      validated_params[param_name] =
-        if param_config.type_value == :referential && value.respond_to?(:id)
-          value.id
-        elsif param_config.array? && param_config.of_value == :referential
-          value.map { |element| element.respond_to?(:id) ? element.id : element }
-        else
-          value
-        end
+      validated_params[param_name] = assignment_value(param_config, value)
     end
+    withheld.each { |param_name, value| store_param_ivars(param_name, value) }
 
     # Combined validation — return mapper-rule errors AND the target's own (ActiveModel/ActiveRecord)
     # errors together, so a single call surfaces everything. We assemble the target (assign the
@@ -428,6 +421,41 @@ module ModelMapper
     end
   end
 
+  # Store as instance variable for use by later attributes/defaults/hooks in the same mapping and by the
+  # readers auto-defined in `map_model` (e.g. an `association :call_origin` resolved here is read by name
+  # in a later attribute's `allowing`/`default`). A resolved reference whose param ends in `_id` also
+  # stores the de-suffixed object (`@company_id` + `@company`).
+  def store_param_ivars(param_name, value)
+    if defined?(ActiveRecord::Base) && value.is_a?(ActiveRecord::Base) && param_name.to_s.end_with?('_id')
+      instance_variable_set(:"@#{param_name}", value.id)
+      instance_variable_set(:"@#{param_name.to_s.delete_suffix('_id')}", value)
+    else
+      instance_variable_set(:"@#{param_name}", value)
+    end
+  end
+
+  # What a validated value puts in the assignment hash: for referential types, the ID (scalar → id,
+  # array → array of ids); anything else as is.
+  def assignment_value(param_config, value)
+    if param_config.type_value == :referential && value.respond_to?(:id)
+      value.id
+    elsif param_config.array? && param_config.of_value == :referential
+      value.map { |element| element.respond_to?(:id) ? element.id : element }
+    else
+      value
+    end
+  end
+
+  # Whether assigning `value` would write now, foreseen during the validation loop. It reads the current
+  # records without loading them onto the association, so the check at assignment still loads them after
+  # before_assignation (a child the hook attaches is seen there). An error is not foreseen: the check at
+  # assignment meets it again and lets it propagate as the writer's own would.
+  def immediate_write_foreseen?(target, param_config, value)
+    immediate_write?(target, param_config, value, peek: true)
+  rescue StandardError
+    false
+  end
+
   def guard_immediate_write!(target, param_config, value)
     return if param_config.immediate_write_value == true
     return unless immediate_write?(target, param_config, value)
@@ -447,25 +475,25 @@ module ModelMapper
   # records are equal by class and id (`eql?`), another order writes nothing, and an unsaved record in
   # the current target is never written by the replace; a repeated record writes nothing on a has_many
   # but adds a join row on a :through or HABTM (see collection_keys).
-  def immediate_write?(target, param_config, value)
+  def immediate_write?(target, param_config, value, peek: false)
     return false unless target.respond_to?(:persisted?) && target.persisted?
     return false unless target.class.respond_to?(:reflect_on_association)
 
     if param_config.reference?
-      reference_write?(target, param_config, value)
+      reference_write?(target, param_config, value, peek:)
     elsif (reflection = ids_writer_reflection(target.class, param_config.name))
-      ids_write?(target, reflection, value)
+      ids_write?(target, reflection, value, peek:)
     else
       false
     end
   end
 
-  def reference_write?(target, param_config, value)
+  def reference_write?(target, param_config, value, peek: false)
     reflection = target.class.reflect_on_association(param_config.name)
     return false if reflection.nil? || reflection.macro == :belongs_to
 
     association = target.association(reflection.name)
-    current = current_association_records(association, reflection)
+    current = current_association_records(association, reflection, peek:)
     if reflection.collection?
       collection_keys(association, record_keys(Array(value))) !=
         collection_keys(association, record_keys(current.reject(&:new_record?)))
@@ -487,7 +515,7 @@ module ModelMapper
   # one of them names no record, when it raises RecordNotFound before replacing anything. The deprecated
   # `of :referential` validates into records, but they are assigned as their ids (see run_mapping), and
   # those ids are what is read here.
-  def ids_write?(target, reflection, value)
+  def ids_write?(target, reflection, value, peek: false)
     columns = Array(reflection.association_primary_key)
     types = columns.map { |column| reflection.klass.type_for_attribute(column) }
     cast = lambda do |id|
@@ -498,7 +526,7 @@ module ModelMapper
 
     ids = Array(value).reject(&:blank?).map(&cast)
     association = target.association(reflection.name)
-    current = current_association_records(association, reflection).reject(&:new_record?).map(&key_of)
+    current = current_association_records(association, reflection, peek:).reject(&:new_record?).map(&key_of)
     return false if collection_keys(association, ids) == collection_keys(association, current)
 
     # The writer's own lookup: `klass.where(key => ids)`, every distinct id matched by one record.
@@ -515,8 +543,14 @@ module ModelMapper
   # loads them, so the writer then diffs against the very records checked here (not a fresh read that may
   # hold a child attached in between), and a `strict_loading` owner behaves as it does without the check:
   # a collection's replace skips strict loading (private API, hence `send`; an ActiveRecord without it
-  # does not skip either), a has_one's replace raises StrictLoadingViolationError.
-  def current_association_records(association, reflection)
+  # does not skip either), a has_one's replace raises StrictLoadingViolationError. `peek` reads them
+  # without loading the association: the loaded target if any, else a query on the association's scope.
+  def current_association_records(association, reflection, peek: false)
+    if peek
+      return association.target if association.loaded?
+
+      return reflection.collection? ? association.scope.to_a : association.scope.first
+    end
     if reflection.collection? && association.respond_to?(:skip_strict_loading, true)
       association.send(:skip_strict_loading) { association.load_target }
     else
