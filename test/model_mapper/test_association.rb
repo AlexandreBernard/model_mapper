@@ -317,6 +317,29 @@ class UpsertNotesMapper
 
 end
 
+# Polymorphic belongs_to upsert: the writer sets the owner's type column as well as its foreign key.
+class UpsertPolyNote < ActiveRecord::Base
+
+  self.table_name = 'upsert_notes'
+  belongs_to :noteable, polymorphic: true, optional: true
+  accepts_nested_attributes_for :noteable
+
+end
+
+class UpsertPolyNoteMapper
+
+  include ModelMapper
+
+  map_model do
+    association :noteable_attributes do
+      from :noteable
+      with AssocManualMapper
+      allowing -> { Manual.all }
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -627,6 +650,55 @@ class TestAssociation < Minitest::Test
     widget.save!
     note.reload
     assert_equal 'renamed', note.body
+    assert_equal [widget.id, 'UpsertNoteWidget'], [note.noteable_id, note.noteable_type]
+  end
+
+  # The has_one writer would link the child at once (its replace saves it): the map must not use it.
+  def test_upsert_has_one_on_a_parent_without_child_does_not_persist_during_map
+    manual = Manual.create!(title: 'orig')
+    widget = Widget.create!(name: 'w')
+    UpsertManualMapper.map_to_model(widget, { manual: { id: manual.id, title: 'renamed' } })
+
+    manual.reload
+    assert_equal 'orig', manual.title
+    assert_nil manual.widget_id
+  end
+
+  def test_upsert_polymorphic_belongs_to_links_id_and_type
+    manual = Manual.create!(title: 'orig')
+    note   = UpsertPolyNote.create!(body: 'n')
+    mapper = UpsertPolyNoteMapper.map_to_model(note, { noteable: { id: manual.id, title: 'renamed' } })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    note.save!
+    note.reload
+    assert_equal [manual.id, 'Manual'], [note.noteable_id, note.noteable_type]
+    assert_equal 'renamed', manual.reload.title
+  end
+
+  # An in-scope element owned by another parent is moved to this one: the owner key is overwritten.
+  def test_upsert_has_many_without_inverse_moves_an_element_from_another_parent
+    other  = UpsertFkWidget.create!(name: 'other')
+    widget = UpsertFkWidget.create!(name: 'w')
+    part   = Part.create!(name: 'orig', widget_id: other.id)
+    mapper = UpsertFkPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal widget.id, part.reload.widget_id
+    assert_equal [part.id], widget.parts.reload.pluck(:id)
+    assert_empty other.parts.reload
+  end
+
+  def test_upsert_polymorphic_has_many_moves_an_element_from_another_type
+    other  = UpsertPolyNote.create!(body: 'other owner')
+    widget = UpsertNoteWidget.create!(name: 'w')
+    note   = UpsertNote.create!(body: 'orig', noteable_id: other.id, noteable_type: 'UpsertPolyNote')
+    mapper = UpsertNotesMapper.map_to_model(widget, { notes: [{ id: note.id, body: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    note.reload
     assert_equal [widget.id, 'UpsertNoteWidget'], [note.noteable_id, note.noteable_type]
   end
 

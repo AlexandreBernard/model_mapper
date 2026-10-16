@@ -43,7 +43,8 @@ through.
 `set_owner_attributes` is a private ActiveRecord method (`Association#set_owner_attributes`, present
 from 7.0 — the gem's floor — to 8.1), called with `send`. It is the method `build` itself uses, so it
 covers what a hand-written `record[reflection.foreign_key] = owner[reflection.active_record_primary_key]`
-does not: the polymorphic `as:` type column, and composite keys. On an owner not yet saved it sets
+does not: the polymorphic `as:` type column (tested), and composite keys (ActiveRecord 7.1+;
+reasoned from its source, not tested — the suite has no composite-key table). On an owner not yet saved it sets
 the key to `nil`; ActiveRecord's `insert_record` sets it again once the owner has its id (new owner →
 `new_record_before_save` → `insert_record`).
 

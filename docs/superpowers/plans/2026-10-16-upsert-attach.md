@@ -16,6 +16,9 @@ no parallel dispatch — below two lanes it costs more than it returns.
    - same on a new parent: links after save.
    - has_many without inverse writes nothing during the map.
    - polymorphic has_many (`as:`): links id and type.
+   - added after the plan attack: has_one upsert on a parent with no child writes nothing during the
+     map; polymorphic belongs_to links id and type; has_many (FK and polymorphic) moves an element
+     owned by another parent.
    - has_one differing id still refused (existing test `test_upsert_singular_rejects_replacing_a_different_current_child`).
 2. `attach_existing_record`: dispatch on `association.reflection` (belongs_to writer / collection
    `add_to_target` + `set_owner_attributes` / has_one `target=`); rewrite its comment.
