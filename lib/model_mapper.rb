@@ -686,35 +686,19 @@ module ModelMapper
   end
 
   # Decide the fate of an element under an upsert (`with` + `allowing`) by looking its identifier up in
-  # the `allowing` scope — the SAME reference-style `find_by` lookup used by 1-1/1-N references, so both
-  # modes accept the same `allowing` shapes:
+  # the `allowing` scope — the SAME lookup as 1-1/1-N references (lookup_reference), so both modes accept
+  # the same `allowing` shapes and refuse the same identifiers:
   #   - not an upsert, or no identifier → nil       (CREATE: a fresh nested record is built)
   #   - identifier found in scope       → the record (UPDATE: it is attached + updated by the caller)
   #   - identifier out of scope         → :rejected (a per-element error is recorded; element skipped)
   def upsert_record(param_config, source_params, element, validation_errors, index: nil)
     return nil unless param_config.upsert?
 
-    identifier = param_config.field_value
-    id         = reference_id(element, identifier)
-    return nil if id.nil? || (id.respond_to?(:empty?) && id.empty?)
-
-    field_path = reference_field_path(param_config, index, identifier)
-
-    # Same refusal as the reference path: a list or a section reaches `find_by` as-is and silently
-    # matches one of its elements, turning the element into an UPDATE of a record it never named.
-    if id.respond_to?(:each)
-      validation_errors[field_path] =
-        ModelMapper::InvalidValueError.new(field_path,
-                                           details: I18n.t('errors.invalid_value_details.reference_id_not_scalar'))
-      return :rejected
+    field_path = reference_field_path(param_config, index, param_config.field_value)
+    lookup_reference(element, param_config, source_params, field_path) do |error|
+      validation_errors[field_path] = error
+      :rejected
     end
-
-    record = allowed_values(param_config, source_params).find_by(identifier => id)
-    return record if record
-
-    validation_errors[field_path] =
-      ModelMapper::InvalidValueError.new(field_path, details: I18n.t('errors.invalid_value_details.invalid_referential'))
-    :rejected
   end
 
   # Map the sub-payload onto a nested record and fold the sub-mapper's combined errors into the parent
@@ -1085,22 +1069,37 @@ module ModelMapper
   # up in the `allowing` scope, and return the record. Missing id → InvalidNilValueError; out-of-scope
   # or unknown id → InvalidValueError. Both keyed on the params path (e.g. "call_origin.id", "tags.2.id").
   def resolve_reference(element, param_config, source_params, index: nil)
+    field_path = reference_field_path(param_config, index, param_config.field_value)
+    record     = lookup_reference(element, param_config, source_params, field_path) { |error| raise error }
+    raise ModelMapper::InvalidNilValueError.new(field_path) if record.nil?
+
+    record
+  end
+
+  # The lookup both reference modes share — a reference and an upsert must accept and refuse the same
+  # identifiers, so the rule lives once: read the identifier (default :id) from the element, then
+  # `find_by` it in the `allowing` scope. Returns the record, or nil when the element names no
+  # identifier (nil or empty) — the caller decides what that means. A refusal is yielded as an
+  # InvalidValueError keyed on `field_path`, and the block's value is returned: the caller raises it
+  # (reference) or records it (upsert). A block rather than raise-and-rescue, so that a caller that
+  # records refusals never swallows an InvalidValueError raised by the `allowing` proc itself.
+  def lookup_reference(element, param_config, source_params, field_path)
     identifier = param_config.field_value
     id         = reference_id(element, identifier)
-    field_path = reference_field_path(param_config, index, identifier)
+    return nil if id.nil? || (id.respond_to?(:empty?) && id.empty?)
 
-    raise ModelMapper::InvalidNilValueError.new(field_path) if id.nil? || (id.respond_to?(:empty?) && id.empty?)
-
-    # A list or a section reaches `find_by` as-is: a silent match on one element, or a database error.
+    # A list or a section reaches `find_by` as-is: a silent match on one of its elements (a reference
+    # to, or an UPDATE of, a record the payload never named), or a database error.
     if id.respond_to?(:each)
-      raise ModelMapper::InvalidValueError.new(field_path,
-                                               details: I18n.t('errors.invalid_value_details.reference_id_not_scalar'))
+      return yield ModelMapper::InvalidValueError.new(
+        field_path, details: I18n.t('errors.invalid_value_details.reference_id_not_scalar')
+      )
     end
 
     record = allowed_values(param_config, source_params).find_by(identifier => id)
     return record if record
 
-    raise ModelMapper::InvalidValueError.new(field_path, details: I18n.t('errors.invalid_value_details.invalid_referential'))
+    yield ModelMapper::InvalidValueError.new(field_path, details: I18n.t('errors.invalid_value_details.invalid_referential'))
   end
 
   # The id of a reference element: the `identifier` key of a section (a Hash or an
