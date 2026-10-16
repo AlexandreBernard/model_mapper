@@ -181,4 +181,14 @@ class TestRuleDispatch < Minitest::Test
 
     assert_includes mapper.errors.keys.map(&:to_s), 'status'
   end
+
+  # --- a plain value answers for itself -------------------------------------------------------------
+
+  def test_plain_values_are_taken_as_written
+    assert_includes map(required_mapper(true), {}).errors.keys.map(&:to_s), 'name'
+    assert_empty map(required_mapper(false), {}).errors
+    assert_equal 'plain', map(default_mapper('plain')).record.code
+    assert_equal 'active', map(allowing_mapper(%w[active])).record.status
+    assert_includes map(allowing_mapper(%w[archived])).errors.keys.map(&:to_s), 'status'
+  end
 end
