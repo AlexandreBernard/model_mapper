@@ -222,10 +222,10 @@ class TestRuleDispatch < Minitest::Test
   end
 
   # A validator is any callable `instance_exec` accepts as a block, not only a Proc: a Method is run, never
-  # assigned as the value.
+  # assigned as the value, and like a lambda it gets only the arguments its signature takes.
   module Upcase
 
-    def self.call(value, _params = nil) = value.upcase
+    def self.call(value) = value.upcase
 
   end
 

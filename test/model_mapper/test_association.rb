@@ -1684,4 +1684,35 @@ class TestAssociation < Minitest::Test
     end
     assert_equal category.id, LegacyRefIdMapper.map_to_model(Widget.new, { category_id: category.id.to_s }).record.category_id
   end
+  def test_legacy_referential_list_refuses_a_coerced_id_after_a_valid_one
+    category = Category.create!(name: 'listed', enabled: true)
+    [[category.id, "#{category.id}abc"], [category.id, true]].each do |payload|
+      mapper = LegacyRefIdListMapper.map_to_model(Widget.new, { category_id: payload })
+
+      assert_equal ['category_id'], mapper.errors.keys, "category_id #{payload.inspect} was accepted"
+    end
+  end
+
+  # An `allowing` scope that is not an ActiveRecord relation has no column type to cast against: the id
+  # is left to its own `find_by`, as sent.
+  class DuckScope
+
+    def initialize(record) = @record = record
+
+    def find_by(conditions) = (@record if conditions.values.first == 'duck-id')
+
+  end
+
+  def test_reference_leaves_an_id_to_a_scope_without_column_types
+    category = Category.create!(name: 'duck')
+    klass = Class.new do
+      include ModelMapper
+
+      map_model { association(:category) { allowing -> { DuckScope.new(Category.find_by(name: 'duck')) } } }
+    end
+    mapper = klass.map_to_model(Widget.new, { category: { id: 'duck-id' } })
+
+    assert_empty mapper.errors
+    assert_equal category, mapper.record.category
+  end
 end
