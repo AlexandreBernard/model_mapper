@@ -819,6 +819,144 @@ class TriageScopedPolyNoteMapper
 
 end
 
+# --- PR #18 review: through scopes, composite keys, blank list elements, normalizing id types ------
+
+ActiveRecord::Schema.define do
+  create_table :pr18_taggings, force: true do |t|
+    t.integer :widget_id
+    t.integer :triage_tag_id
+    t.string :role
+  end
+  create_table :pr18_lots, primary_key: %i[shop_id lot_no], force: true do |t|
+    t.integer :shop_id
+    t.integer :lot_no
+    t.string :name
+    t.integer :widget_id
+  end
+end
+
+class Pr18Tagging < ActiveRecord::Base
+
+  belongs_to :triage_tag
+
+end
+
+# A :through scope that filters on the join table: the target table alone cannot evaluate it.
+class Pr18ThroughWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :pr18_taggings, foreign_key: 'widget_id'
+  has_many :admin_tags, -> { where(pr18_taggings: { role: 'admin' }) }, through: :pr18_taggings, source: :triage_tag
+  accepts_nested_attributes_for :admin_tags
+
+end
+
+class Pr18ThroughMapper
+
+  include ModelMapper
+
+  map_model do
+    association :admin_tags_attributes, many: true do
+      from :admin_tags
+      with TriageTagMapper
+      allowing -> { TriageTag.all }
+    end
+  end
+
+end
+
+# A scoped has_many whose element has a composite primary key.
+class Pr18Lot < ActiveRecord::Base
+
+  self.primary_key = %i[shop_id lot_no]
+
+end
+
+class Pr18LotWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :named_lots, -> { where(name: 'ok') }, class_name: 'Pr18Lot', foreign_key: 'widget_id'
+  accepts_nested_attributes_for :named_lots
+
+end
+
+class Pr18LotMapper
+
+  include ModelMapper
+
+  map_model { attribute :name }
+
+end
+
+class Pr18LotsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :named_lots_attributes, many: true do
+      from :named_lots
+      id_field :lot_no
+      with Pr18LotMapper
+      allowing -> { Pr18Lot.all }
+    end
+  end
+
+end
+
+# A legacy list referential, as a Rails form sends it (a hidden "" before the checked ids).
+class Pr18ReferentialListMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :category_ids do
+      type :referential
+      multiple true
+      assign false
+      allowing -> { Category.all }
+    end
+  end
+
+end
+
+# A column whose type normalizes what it casts (as PostgreSQL's uuid downcases): an id sent in another
+# form still names its record.
+class Pr18DowncaseString < ActiveModel::Type::String
+
+  def cast_value(value) = super&.downcase
+
+  # Queries go through serialize; PostgreSQL's uuid casts there too.
+  def serialize(value) = cast(value)
+
+end
+
+class Pr18CiCategory < ActiveRecord::Base
+
+  self.table_name = 'categories'
+  attribute :name, Pr18DowncaseString.new
+
+end
+
+class Pr18CiWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  belongs_to :category, class_name: 'Pr18CiCategory', optional: true
+
+end
+
+class Pr18CiCategoryMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category do
+      id_field :name
+      allowing -> { Pr18CiCategory.all }
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -1751,5 +1889,53 @@ class TestAssociation < Minitest::Test
     refused = TriageScopedPolyNoteMapper.map_to_model(TriageScopedPolyNote.create!(body: 'm'),
                                                      { noteable: { id: draft.id, title: 'x' } })
     assert_equal ['noteable.id'], refused.errors.keys
+  end
+  # --- PR #18 review ---------------------------------------------------------------------------------
+
+  # A :through upsert never links its element, and its scope may filter on the join table, which the
+  # target table alone cannot evaluate: the scope check is skipped instead of raising StatementInvalid.
+  def test_upsert_through_scope_on_the_join_table_maps_without_raising
+    tag    = TriageTag.create!(name: 'orig')
+    widget = Pr18ThroughWidget.create!(name: 'w')
+    mapper = Pr18ThroughMapper.map_to_model(widget, { admin_tags: [{ id: tag.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+  end
+
+  def test_upsert_scope_check_handles_a_composite_primary_key
+    widget = Pr18LotWidget.create!(name: 'w')
+    Pr18Lot.create!(shop_id: 1, lot_no: 7, name: 'ok')
+    Pr18Lot.create!(shop_id: 1, lot_no: 8, name: 'ko')
+
+    accepted = Pr18LotsMapper.map_to_model(widget, { named_lots: [{ lot_no: 7, name: 'ok' }] })
+    assert_predicate accepted, :valid?, accepted.errors.inspect
+
+    refused = Pr18LotsMapper.map_to_model(widget, { named_lots: [{ lot_no: 8, name: 'ok' }] })
+    assert_equal ['named_lots.0.lot_no'], refused.errors.keys
+  end
+
+  def test_legacy_referential_list_ignores_a_blank_element
+    category = Category.create!(name: 'checked')
+    mapper   = Pr18ReferentialListMapper.map_to_model(Widget.new, { category_ids: ['', category.id.to_s] })
+
+    assert_empty mapper.errors
+    assert_equal [category], mapper.category_ids.to_a
+  end
+
+  def test_reference_on_a_normalizing_column_accepts_the_id_in_another_form
+    category = Pr18CiCategory.create!(name: 'mixed-case-pr18')
+    mapper   = Pr18CiCategoryMapper.map_to_model(Pr18CiWidget.new, { category: { name: 'MIXED-CASE-PR18' } })
+
+    assert_empty mapper.errors
+    assert_equal category.id, mapper.record.category_id
+  end
+
+  # On an integer key, a string of digits names its record, leading zeros included.
+  def test_reference_accepts_digits_with_a_leading_zero
+    category = Category.create!(name: 'zero')
+    mapper   = RefCategoryMapper.map_to_model(Widget.new, { category: { id: "0#{category.id}" } })
+
+    assert_empty mapper.errors
+    assert_equal category, mapper.record.category
   end
 end

@@ -26,8 +26,9 @@ A gem: a declarative DSL mapping hash parameters onto ActiveModel / ActiveRecord
   during the map. A reference assignment ActiveRecord would write at once is governed by
   `immediate_write` (`guard_immediate_writes!`).
 - **One id lookup for both reference modes.** Reference and upsert resolve ids through
-  `lookup_reference`, and an id is taken as sent (`exact_reference_id?`): an id that only matches once
-  `find_by` casts it (`true`, `"1abc"`, `1.9`) is refused.
+  `lookup_reference`, and an id is taken as sent (`exact_reference_id?`): on an integer key only an
+  Integer or a string of digits is accepted, so `true`, `"1abc"` or `1.9` — which `find_by` would cast
+  to id 1 — are refused; other key types are left to the column's own cast.
 - **One rule dispatch.** Every rule lambda (`required`, `default`, `allowing`, `map_if`, `authorize`, a
   `type :custom` validator) is called through `ModelMapper::ParamConfig.call_rule`, which hands it as
   many of the option's arguments as its signature accepts. Do not add another `case arity`.

@@ -154,9 +154,11 @@ end
 > `spare_parts.0.id`) rather than linked outside the association. The scope is weighed on the record
 > as stored, with one read, before the payload is mapped onto it.
 >
-> *Ids are taken as sent:* an id must name its record without a lossy cast — `1` and `"1"` do, while
-> `true`, `"1abc"`, `1.9`, `" 1 "` or `"1.0"`, which `find_by` would read as record 1, are refused on
-> the id path. This holds in reference and upsert mode and for a legacy `type :referential`.
+> *Ids are taken as sent:* on an integer key an id must be an Integer or a string of digits — `1`,
+> `"1"` and `"01"` are, while `true`, `"1abc"`, `1.9`, `" 1 "` or `"1.0"`, which `find_by` would read as
+> record 1, are refused on the id path. Any other key type (a uuid, a string) is left to `find_by` and
+> its column's own cast. This holds in reference and upsert mode and for a legacy `type :referential`;
+> a blank element of a `multiple` list (`""`) is ignored, as `where` ignores it.
 >
 > *1-1 replace:* mapping never writes to the DB (associations are staged in memory before overall
 > validity is known), so a 1-1 upsert cannot disassociate a `has_one`'s current child (that needs an

@@ -172,7 +172,8 @@ the old child at once, it is refused on the id path (`cannot_replace_association
 narrowed by a `where` scope (`has_many :spare_parts, -> { where(name: 'spare') }`, or a scoped
 `belongs_to` / `has_one`), a record `allowing` accepts but that scope excludes is refused on its id path
 too (`outside_association_scope`): linked by its key, it would never appear in the association. The
-scope is weighed on the record as stored, with one read. A `has_many :through` or HABTM upsert updates
+scope is weighed on the record as stored, with one read; a `:through` scope, which may filter on the join
+table, is not weighed. A `has_many :through` or HABTM upsert updates
 the element in place but does not link it: no join row is created, so a new link goes through the
 join model.
 
@@ -190,10 +191,11 @@ A float string that overflows (`"1e400"`, accepted as `Infinity`) is refused too
 A reference id was handed to `find_by`, which casts it to the column type first: on an integer key
 `true`, `"1abc"`, `1.9`, `" 1 "` and `"1.0"` all named record 1, and a scalar `type :referential` given
 a list (`[1, 2]`) took its first element — a record the payload never named, which an upsert would then
-update. An id is now accepted only when its cast reads back as the same text (`1` and `"1"` still are; a
-string `id_field` compares the string as sent), in reference and upsert mode and for a legacy
-`type :referential`; anything else is refused on the id path as an `InvalidValueError`, and a scalar
-`type :referential` refuses a list.
+update. On an integer key an id must now be an Integer or a string of digits (`1`, `"1"`, `"01"`), in
+reference and upsert mode and for a legacy `type :referential`; anything else is refused on the id path
+as an `InvalidValueError`, and a scalar `type :referential` refuses a list (a blank element of a
+`multiple` list, the `""` a Rails form's hidden field sends, is still ignored). Any other key type is
+left to `find_by`, whose cast is the column's own normalization (a uuid in any case, a string as is).
 
 ## 0.4.1
 

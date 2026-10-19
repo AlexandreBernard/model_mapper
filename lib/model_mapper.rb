@@ -818,14 +818,17 @@ module ModelMapper
   # count, not the owner key: the element may still belong to another parent, or to none.
   def outside_association_scope?(target, assoc, record, param_config, index, validation_errors)
     reflection = target.association(assoc.to_sym).reflection
-    return false unless reflection.scope
+    # A :through or HABTM upsert never links its element (no join row is created), and its scope may
+    # filter on the join table, which the element's table alone cannot evaluate: nothing to weigh.
+    return false if reflection.scope.nil? || reflection.through_reflection?
 
     # A polymorphic belongs_to has no class of its own (ActiveRecord refuses to compute it): the scope is
     # weighed on the class of the record found.
     klass = reflection.polymorphic? ? record.class : reflection.klass
     scope = reflection.scope_for(klass.unscoped, target)
     return false if scope.where_clause.empty?
-    return false if scope.exists?(klass.primary_key => record.id)
+    # Wrapped in a list so that a composite primary key (an array of columns) matches its array of values.
+    return false if scope.exists?(klass.primary_key => [record.id])
 
     field_path = reference_field_path(param_config, index, param_config.field_value)
     validation_errors[field_path] =
@@ -1117,8 +1120,10 @@ module ModelMapper
 
     # A scalar referential given a list would match its first element; any id that only matches once
     # cast names a record the payload never named (see exact_reference_id?).
+    # A blank element (the "" a Rails form's hidden field sends before the checked ids) names nothing
+    # and `where` ignores it: it is not weighed.
     if (!param_config.multiple? && value.respond_to?(:each)) ||
-       Array(value).any? { |id| !exact_reference_id?(model, field, id) }
+       Array(value).reject { |id| id.nil? || id == '' }.any? { |id| !exact_reference_id?(model, field, id) }
       details = I18n.t("errors.invalid_value_details.invalid_referential#{'_in_list' if param_config.multiple?}")
       raise ModelMapper::InvalidValueError.new(param_config.keys.join('.'), details:)
     end
@@ -1209,18 +1214,19 @@ module ModelMapper
 
   # Whether `id` names its column as sent. `find_by` casts the id to the column type first, so on an
   # integer key `true`, `"1abc"`, `1.9`, `" 1 "` and `"1.0"` would all look up record 1 — a record the
-  # payload never named, which an upsert would then update. The id is accepted only when its cast reads
-  # back as the same text (`1` and `"1"` do; a string column compares the string itself). A record (a
-  # `default` handing records) names itself; a scope whose model cannot be read (not a relation or
-  # model) is left to `find_by`, as before.
+  # payload never named, which an upsert would then update. On an integer column the id must therefore
+  # be an Integer or a string of digits (`1`, `"1"`, `"01"`). Any other column type is left to `find_by`:
+  # its cast is the column's own normalization (a uuid read in any case, a string as is), not a guess.
+  # A record (a `default` handing records) names itself; a scope whose model cannot be read (not a
+  # relation or model) is left to `find_by`, as before.
   def exact_reference_id?(scope, column, id)
     return true if defined?(ActiveRecord::Base) && id.is_a?(ActiveRecord::Base)
 
     model = extract_model_class(scope)
     return true unless model.respond_to?(:type_for_attribute)
+    return true unless model.type_for_attribute(column.to_s).type == :integer
 
-    cast = model.type_for_attribute(column.to_s).cast(id)
-    !cast.nil? && cast.to_s == id.to_s
+    id.is_a?(Integer) || (id.is_a?(String) && id.match?(/\A\d+\z/))
   end
 
   # The id of a reference element: the `identifier` key of a section (a Hash or an
