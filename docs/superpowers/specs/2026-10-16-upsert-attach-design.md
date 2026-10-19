@@ -34,21 +34,29 @@ mapped before overall validity is known; a write there has no rollback when the 
 | Association | Staging | Why it writes nothing |
 |---|---|---|
 | belongs_to | `target.public_send("#{assoc}=", record)` | `BelongsToAssociation#replace` sets the foreign key (and a polymorphic type) on the owner, the inverse, `updated?` and the target — all in memory |
-| has_many (`many: true`) | `add_to_target(record)`, then the association's own `set_owner_attributes(record)` | sets the record's foreign key (and the `as:` type column) from the owner in memory; the collection writer `parts=` is avoided because on a persisted owner it writes at once |
+| has_many (`many: true`) | `add_to_target(record)`, then `assign_owner_key(target, reflection, record)` | sets the record's foreign key (and the `as:` type column) from the owner in memory; the collection writer `parts=` is avoided because on a persisted owner it writes at once |
 | has_one | `association.target = record` (unchanged) | ActiveRecord's `save_has_one_association` always writes the key on save |
 
 `singular_replace_rejected?` refuses a differing id for has_one only; a belongs_to replacement goes
 through.
 
-`set_owner_attributes` is a private ActiveRecord method (`Association#set_owner_attributes`, present
-from 7.0 — the gem's floor — to 8.1), called with `send`. It is the method `build` itself uses, so it
-covers what a hand-written `record[reflection.foreign_key] = owner[reflection.active_record_primary_key]`
-does not: the polymorphic `as:` type column (tested), and composite keys (ActiveRecord 7.1+;
-reasoned from its source, not tested — the suite has no composite-key table). It is skipped on an owner not yet
-saved: that owner has no id, so it would set the key to `nil` — blanking an element's current owner and
-failing a required `belongs_to` on it (`parts.0.widget: must exist`, found by the domain review) — while
-ActiveRecord's `insert_record` sets the key anyway once the owner has its id (new owner →
-`new_record_before_save` → `insert_record`).
+`assign_owner_key` uses public reflection API only (owner's decision, batch second round): each
+`reflection.foreign_key` column is set from the matching `reflection.active_record_primary_key` column
+of the owner (zipped, so a composite key is covered — reasoned, not tested: the suite has no
+composite-key table), and, for a polymorphic `has_many …, as:`, `reflection.type` is set to the owner's
+`polymorphic_name` (tested). It is skipped on an owner not yet saved: that owner has no id, so it would
+set the key to `nil` — blanking an element's current owner and failing a required `belongs_to` on it
+(`parts.0.widget: must exist`, found by the domain review) — while ActiveRecord's `insert_record` sets
+the key anyway once the owner has its id (new owner → `new_record_before_save` → `insert_record`).
+
+A has_many narrowed by a `where` scope refuses an upserted element the scope excludes
+(`outside_association_scope?`, owner's decision): `allowing` may accept a record the association can
+never hold, and linked by its key it would sit outside the association. The scope is evaluated with
+ActiveRecord's own `reflection.scope_for(klass.unscoped, owner)` — so an owner-dependent scope and a SQL
+string condition count, not only a hash — and weighed with one `exists?` read on the record as stored,
+before the payload is mapped onto it. The owner key is not part of that check: the element may belong to
+another parent, or to none. A scope with no `where` (`-> { order(:id) }`) costs nothing. The refusal is
+keyed on the element's id path (`spare_parts.0.id`) with `outside_association_scope`.
 
 ## Assumptions
 
@@ -56,21 +64,13 @@ ActiveRecord's `insert_record` sets the key anyway once the owner has its id (ne
   inverse path already did; the `allowing` scope is what bounds it.
 - A belongs_to replacement leaves the previous record untouched (not destroyed, not updated).
 - has_many `:through` upserts are out of scope (unchanged; never supported by this path).
-- A has_many with a `where` scope (`-> { where(name: 'spare') }`) gets the owner key only, not the
-  scope's create attributes: an in-scope (`allowing`) element that does not match the association's
-  `where` is linked to the parent but stays outside the association. Before this change it was not
-  linked at all. Making `allowing` consistent with the association's scope is the caller's part.
+- The where-scope check weighs the record as stored: a payload that would rewrite it into the scope
+  (`{ id: 3, name: 'spare' }` on a part named `'regular'`) is still refused.
 
-## Owner may reverse
+## Decided by the owner (batch second round, 2026-10-19)
 
-- **A where-scoped has_many element outside the scope** (found by the adversarial review). Chosen:
-  set the owner key only — the element is linked but not in the association (`spare_parts` stays
-  `[]`, `part.widget_id` = the parent). Other options: apply the scope's create attributes too, as
-  `build` does — the element joins the association, but the upsert rewrites `name` to `'spare'`, a
-  value the payload never sent; or refuse such an element with a params-path error (`parts.0.id`) by
-  checking it in memory against the scope's `where` values — no write, a new i18n key.
-
-- **How the has_many key is set.** Chosen: the association's private `set_owner_attributes`. Other
-  option: the reflection's `foreign_key` / `active_record_primary_key`, public API only. On the
-  motivating case (`foreign_key: 'widget_id'`) both link the part; on a polymorphic `has_many …, as:`
-  the reflection option leaves the `_type` column unset, so the part is linked to no owner type.
+- **How the has_many key is set**: the reflection's public `foreign_key` / `active_record_primary_key`,
+  plus the `as:` type column set by hand — not the private `Association#set_owner_attributes` this
+  ticket first used.
+- **A where-scoped has_many element outside the scope**: refused on its id path, rather than linked by
+  its key outside the association, or rewritten with the scope's create attributes.

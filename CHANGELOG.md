@@ -153,7 +153,9 @@ the `as:` type column), both in memory, so the map still writes nothing before t
 without an id is still created, an out-of-scope id is still rejected, and `with` alone always creates.
 A 1-1 upsert whose in-scope id names a record other than the parent's current one replaces it on a
 `belongs_to`, where only the parent's foreign key moves; on a `has_one`, whose replacement would nullify
-the old child at once, it is refused on the id path (`cannot_replace_association`).
+the old child at once, it is refused on the id path (`cannot_replace_association`). On a `has_many`
+narrowed by a `where` scope, an element `allowing` accepts but that scope excludes is refused on its
+id path too (`outside_association_scope`): linked by its key, it would never appear in the association.
 
 An `association` in reference or upsert mode given an `ActionController::Parameters` section took the
 whole section as the id, so every such reference was rejected; the section is now read like a Hash.

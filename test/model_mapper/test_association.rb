@@ -538,6 +538,36 @@ class EnumeratedIdMapper
 
 end
 
+# A has_many narrowed by a `where` scope: an in-`allowing` element outside that scope cannot join it.
+class UpsertSpareWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :spare_parts, -> { where(name: 'spare') }, class_name: 'Part', foreign_key: 'widget_id'
+  has_many :worn_parts, -> { where("name LIKE 'worn%'") }, class_name: 'Part', foreign_key: 'widget_id'
+  accepts_nested_attributes_for :spare_parts
+  accepts_nested_attributes_for :worn_parts
+
+end
+
+class UpsertSparePartsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :spare_parts_attributes, many: true do
+      from :spare_parts
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+    association :worn_parts_attributes, many: true do
+      from :worn_parts
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -1181,6 +1211,63 @@ class TestAssociation < Minitest::Test
         map_model { attribute(:name) { condition -> { true } } }
       end
     end
+  end
+
+
+  # An element `allowing` accepts but the association's own `where` scope excludes would be linked by
+  # its key yet never appear in the association: it is refused on its id, and nothing is linked.
+  def test_upsert_refuses_an_element_outside_the_association_where_scope
+    widget = UpsertSpareWidget.create!(name: 'w')
+    part   = Part.create!(name: 'regular')
+    mapper = UpsertSparePartsMapper.map_to_model(widget, { spare_parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_equal ['spare_parts.0.id'], mapper.errors.keys
+    assert_equal I18n.t('errors.invalid_value_details.outside_association_scope'),
+                 mapper.errors['spare_parts.0.id'].details
+    assert_nil part.reload.widget_id
+    assert_equal 'regular', part.name
+  end
+
+  # The scope is weighed on the record as stored, not as the payload would rewrite it.
+  def test_upsert_refuses_an_out_of_scope_element_even_when_the_payload_would_bring_it_in
+    widget = UpsertSpareWidget.create!(name: 'w')
+    part   = Part.create!(name: 'regular')
+    mapper = UpsertSparePartsMapper.map_to_model(widget, { spare_parts: [{ id: part.id, name: 'spare' }] })
+
+    assert_equal ['spare_parts.0.id'], mapper.errors.keys
+  end
+
+  def test_upsert_accepts_an_element_inside_the_association_where_scope
+    widget = UpsertSpareWidget.create!(name: 'w')
+    part   = Part.create!(name: 'spare')
+    mapper = UpsertSparePartsMapper.map_to_model(widget, { spare_parts: [{ id: part.id }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    assert_equal [part.id], widget.spare_parts.reload.pluck(:id)
+  end
+
+  # A scope written as SQL is weighed too, not only a hash condition.
+  def test_upsert_refuses_an_element_outside_a_sql_where_scope
+    widget = UpsertSpareWidget.create!(name: 'w')
+    worn   = Part.create!(name: 'worn out')
+    fresh  = Part.create!(name: 'fresh')
+    mapper = UpsertSparePartsMapper.map_to_model(widget, { worn_parts: [{ id: worn.id }, { id: fresh.id }] })
+
+    assert_equal ['worn_parts.1.id'], mapper.errors.keys
+  end
+
+  # The scope check reads, it never writes: a refused element leaves the database as it was.
+  def test_upsert_scope_refusal_writes_nothing_during_the_map
+    widget = UpsertSpareWidget.create!(name: 'w')
+    part   = Part.create!(name: 'regular')
+    queries = []
+    callback = ->(*, payload) { queries << payload[:sql] unless payload[:name] == 'SCHEMA' }
+    ActiveSupport::Notifications.subscribed(callback, 'sql.active_record') do
+      UpsertSparePartsMapper.map_to_model(widget, { spare_parts: [{ id: part.id }] })
+    end
+
+    assert(queries.none? { |sql| sql =~ /\A\s*(INSERT|UPDATE|DELETE)/i }, queries.inspect)
   end
 
 end

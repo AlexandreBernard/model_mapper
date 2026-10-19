@@ -689,6 +689,7 @@ module ModelMapper
         sub_source.each_with_index do |item, index|
           existing = upsert_record(param_config, source_params, item, validation_errors, index:)
           next if existing == :rejected
+          next if existing && outside_association_scope?(target, assoc, existing, param_config, index, validation_errors)
 
           run_sub_mapper(target, assoc, item, param_config.mapper_value, context, validation_errors,
                          index:, existing:)
@@ -767,8 +768,8 @@ module ModelMapper
   #   - belongs_to: the `assoc=` writer, which on a belongs_to only sets the owner's foreign key (and a
   #     polymorphic type), the inverse and the target — the key is written by the parent's save. A
   #     differing current record is simply replaced; it is left untouched.
-  #   - collection: added to the loaded target, then the association's own `set_owner_attributes` sets
-  #     the owner key on the record (and the `as:` type column). `add_to_target` alone links it only
+  #   - collection: added to the loaded target, then `assign_owner_key` sets the owner key on the record
+  #     (and the `as:` type column). `add_to_target` alone links it only
   #     through an inverse ActiveRecord detects, which a scoped has_many or an explicit `foreign_key:`
   #     lacks, and the autosave of an already-persisted element never sets the key. An unsaved parent
   #     has no key to give yet — setting it would blank the element's current owner and fail a
@@ -786,12 +787,42 @@ module ModelMapper
     association = target.association(assoc.to_sym)
     if index
       association.add_to_target(record)
-      association.send(:set_owner_attributes, record) if target.persisted?
+      assign_owner_key(target, association.reflection, record) if target.persisted?
     elsif association.reflection.belongs_to?
       target.public_send(:"#{assoc}=", record)
     else
       association.target = record
     end
+  end
+
+  # The owner key of a has_many element, read off the reflection (public API): each foreign key column
+  # from the parent's matching primary key column (several under a composite key), and the `as:` type
+  # column of a polymorphic association, which a plain foreign key would leave nil.
+  def assign_owner_key(target, reflection, record)
+    Array(reflection.foreign_key).zip(Array(reflection.active_record_primary_key)).each do |foreign_key, primary_key|
+      record[foreign_key] = target[primary_key]
+    end
+    record[reflection.type] = target.class.polymorphic_name if reflection.type
+  end
+
+  # A has_many narrowed by a `where` scope (`-> { where(name: 'spare') }`) only ever holds records that
+  # match it, but `allowing` may accept one that does not. Linked by its key, that record would never
+  # appear in the association, so it is refused on its id instead. The scope is weighed on the record as
+  # stored (one read, never a write), not as the payload would rewrite it, and only its own conditions
+  # count, not the owner key: the element may still belong to another parent, or to none.
+  def outside_association_scope?(target, assoc, record, param_config, index, validation_errors)
+    reflection = target.association(assoc.to_sym).reflection
+    return false unless reflection.scope
+
+    scope = reflection.scope_for(reflection.klass.unscoped, target)
+    return false if scope.where_clause.empty?
+    return false if scope.exists?(reflection.klass.primary_key => record.id)
+
+    field_path = reference_field_path(param_config, index, param_config.field_value)
+    validation_errors[field_path] =
+      ModelMapper::InvalidValueError.new(field_path,
+                                         details: I18n.t('errors.invalid_value_details.outside_association_scope'))
+    true
   end
 
   # Wrap persistence with the before_save/after_save hooks.
