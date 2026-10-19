@@ -663,14 +663,19 @@ module ModelMapper
     end
   end
 
-  # A 1-1 upsert may update the parent's current child in place, but it must NOT reassign a DIFFERENT
-  # in-scope record: mapping is write-free (see attach_existing_record), so it cannot disassociate the
-  # old child (a has_one replace always writes), and silently attaching the new one would orphan the old
-  # child on the parent's later save. So we reject a differing in-scope id with a params-path error
-  # (e.g. "manual.id") and leave a genuine 1-1 replacement to the caller. Attaching to a parent with no
-  # current child, or updating the same child, is fine. `load_target` only reads (no write).
+  # A has_one upsert may update the parent's current child in place, but it must NOT reassign a
+  # DIFFERENT in-scope record: mapping is write-free (see attach_existing_record), so it cannot
+  # disassociate the old child (a has_one replace always writes), and silently attaching the new one
+  # would orphan the old child on the parent's later save. So we reject a differing in-scope id with a
+  # params-path error (e.g. "manual.id") and leave a genuine has_one replacement to the caller. Attaching
+  # to a parent with no current child, or updating the same child, is fine. A belongs_to is never
+  # refused: the owner holds the foreign key, so replacing it only moves that key in memory and leaves
+  # the previous record untouched. `load_target` only reads (no write).
   def singular_replace_rejected?(target, assoc, record, param_config, validation_errors)
-    current = target.association(assoc.to_sym).load_target
+    association = target.association(assoc.to_sym)
+    return false if association.reflection.belongs_to?
+
+    current = association.load_target
     return false if current.nil? || current == record
 
     field_path = reference_field_path(param_config, nil, param_config.field_value)
@@ -732,21 +737,34 @@ module ModelMapper
     index ? target.public_send(assoc).build : target.public_send(:"build_#{assoc}")
   end
 
-  # Stage an existing (upsert-update) record onto the association in memory, WITHOUT persisting: the
-  # collection case adds it to the loaded target, the singular case sets it as the association target.
-  # The parent's save then cascades the update through accepts_nested_attributes_for's autosave.
+  # Stage an existing (upsert-update) record onto the association in memory, WITHOUT persisting, and link
+  # it, so that the parent's save both cascades the update (accepts_nested_attributes_for's autosave)
+  # and writes the foreign key:
+  #   - belongs_to: the `assoc=` writer, which on a belongs_to only sets the owner's foreign key (and a
+  #     polymorphic type), the inverse and the target — the key is written by the parent's save. A
+  #     differing current record is simply replaced; it is left untouched.
+  #   - collection: added to the loaded target, then the association's own `set_owner_attributes` sets
+  #     the owner key on the record (and the `as:` type column). `add_to_target` alone links it only
+  #     through an inverse ActiveRecord detects, which a scoped has_many or an explicit `foreign_key:`
+  #     lacks, and the autosave of an already-persisted element never sets the key. An unsaved parent
+  #     has no key to give yet — setting it would blank the element's current owner and fail a
+  #     required belongs_to — so it is left to `insert_record`, which sets it at save.
+  #   - has_one: set as the association target; its autosave always writes the key.
   #
   # Strictly in-memory on purpose: associations are mapped inside `run_mapping`, before overall validity
   # is known, so writing here would mutate the DB on a map that later fails validation (and never
   # persists) — breaking the "map doesn't persist" contract with no rollback. We therefore never use the
-  # `assoc=` writer (its has_one replace immediately nullifies a previous child — a write we must not do
-  # here). For 1-1 this only ever attaches to a parent with no current child, or updates the SAME child;
-  # a differing in-scope id is rejected upstream (see singular_replace_rejected?), so no old child is
-  # ever orphaned.
+  # collection writer (`parts=` writes at once on a persisted parent) nor the has_one writer (its replace
+  # immediately nullifies a previous child). A has_one upsert only ever attaches to a parent with no
+  # current child, or updates the SAME child; a differing in-scope id is rejected upstream (see
+  # singular_replace_rejected?), so no old child is ever orphaned.
   def attach_existing_record(target, assoc, record, index)
     association = target.association(assoc.to_sym)
     if index
       association.add_to_target(record)
+      association.send(:set_owner_attributes, record) if target.persisted?
+    elsif association.reflection.belongs_to?
+      target.public_send(:"#{assoc}=", record)
     else
       association.target = record
     end

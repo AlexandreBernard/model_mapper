@@ -215,6 +215,161 @@ class StatusPathMapper
 
 end
 
+# --- upsert linking: belongs_to, and has_many with no inverse ActiveRecord could detect --------------
+
+# belongs_to 1-1 upsert: the owner holds the foreign key.
+class UpsertBtWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  belongs_to :category, optional: true
+  accepts_nested_attributes_for :category
+
+end
+
+class UpsertBtCategoryMapper
+
+  include ModelMapper
+
+  map_model { attribute :name }
+
+end
+
+class UpsertBtMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category_attributes do
+      from :category
+      with UpsertBtCategoryMapper
+      allowing -> { Category.all }
+    end
+  end
+
+end
+
+# A scope and an explicit `foreign_key:` stop ActiveRecord from detecting the inverse `belongs_to`, so
+# nothing links the element through it.
+class UpsertFkWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :parts, -> { order(:id) }, foreign_key: 'widget_id'
+  accepts_nested_attributes_for :parts
+
+end
+
+class UpsertFkPartsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+  end
+
+end
+
+# Polymorphic has_many (`as:`), scoped so no inverse is detected: linking must set the type column too.
+ActiveRecord::Schema.define do
+  create_table :upsert_notes, force: true do |t|
+    t.integer :noteable_id
+    t.string :noteable_type
+    t.string :body
+  end
+end
+
+class UpsertNote < ActiveRecord::Base
+
+  belongs_to :noteable, polymorphic: true, optional: true
+
+end
+
+class UpsertNoteWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :notes, -> { order(:id) }, as: :noteable, class_name: 'UpsertNote'
+  accepts_nested_attributes_for :notes
+
+end
+
+class UpsertNoteBodyMapper
+
+  include ModelMapper
+
+  map_model { attribute :body }
+
+end
+
+class UpsertNotesMapper
+
+  include ModelMapper
+
+  map_model do
+    association :notes_attributes, many: true do
+      from :notes
+      with UpsertNoteBodyMapper
+      allowing -> { UpsertNote.all }
+    end
+  end
+
+end
+
+# Polymorphic belongs_to upsert: the writer sets the owner's type column as well as its foreign key.
+class UpsertPolyNote < ActiveRecord::Base
+
+  self.table_name = 'upsert_notes'
+  belongs_to :noteable, polymorphic: true, optional: true
+  accepts_nested_attributes_for :noteable
+
+end
+
+class UpsertPolyNoteMapper
+
+  include ModelMapper
+
+  map_model do
+    association :noteable_attributes do
+      from :noteable
+      with AssocManualMapper
+      allowing -> { Manual.all }
+    end
+  end
+
+end
+
+# Same no-inverse has_many, onto an element that requires its owner.
+class UpsertRequiredPart < ActiveRecord::Base
+
+  self.table_name = 'parts'
+  belongs_to :widget, class_name: 'UpsertRequiredWidget', optional: false
+
+end
+
+class UpsertRequiredWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :parts, -> { order(:id) }, foreign_key: 'widget_id', class_name: 'UpsertRequiredPart'
+  accepts_nested_attributes_for :parts
+
+end
+
+class UpsertRequiredPartsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { UpsertRequiredPart.all }
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -428,6 +583,167 @@ class TestAssociation < Minitest::Test
     assert_includes mapper.errors.keys, 'manual.id'
     assert_equal widget.id, old_manual.reload.widget_id # current child untouched — no orphan, no write
     assert_nil new_manual.reload.widget_id              # the differing record was not attached
+  end
+
+  # A belongs_to upsert must LINK the record, not only update it: the owner's foreign key is set by the
+  # association writer, in memory, and written by the parent's save.
+  def test_upsert_belongs_to_links_the_record
+    category = Category.create!(name: 'orig')
+    widget   = UpsertBtWidget.create!(name: 'w')
+    mapper   = UpsertBtMapper.map_to_model(widget, { category: { id: category.id, name: 'renamed' } })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal 'renamed', category.reload.name
+    assert_equal category.id, widget.reload.category_id
+  end
+
+  def test_upsert_belongs_to_links_the_record_on_a_new_parent
+    category = Category.create!(name: 'orig')
+    widget   = UpsertBtWidget.new(name: 'w')
+    mapper   = UpsertBtMapper.map_to_model(widget, { category: { id: category.id, name: 'renamed' } })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal 'renamed', category.reload.name
+    assert_equal category.id, widget.reload.category_id
+  end
+
+  # Replacing a belongs_to only moves the owner's foreign key, in memory: no write, no orphan, so a
+  # differing in-scope id is accepted (unlike has_one) and the previous record is left untouched.
+  def test_upsert_belongs_to_replaces_a_different_current_record
+    old_category = Category.create!(name: 'old')
+    category     = Category.create!(name: 'new')
+    widget       = UpsertBtWidget.create!(name: 'w', category: old_category)
+    mapper       = UpsertBtMapper.map_to_model(widget, { category: { id: category.id, name: 'renamed' } })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    assert_equal category.id, widget.reload.category_id
+    assert_equal 'renamed', category.reload.name
+    assert_equal 'old', old_category.reload.name
+  end
+
+  def test_upsert_belongs_to_does_not_persist_during_map
+    old_category = Category.create!(name: 'old')
+    category     = Category.create!(name: 'orig')
+    widget       = UpsertBtWidget.create!(name: 'w', category: old_category)
+    UpsertBtMapper.map_to_model(widget, { category: { id: category.id, name: 'renamed' } })
+
+    assert_equal 'orig', category.reload.name
+    assert_equal old_category.id, UpsertBtWidget.find(widget.id).category_id
+  end
+
+  # With no inverse ActiveRecord could detect, `add_to_target` alone links nothing, and the parent's
+  # save only re-saves an already-persisted element: the owner key is set on the element in memory.
+  def test_upsert_has_many_without_inverse_links_the_record
+    part   = Part.create!(name: 'orig')
+    widget = UpsertFkWidget.create!(name: 'w')
+    mapper = UpsertFkPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal 'renamed', part.reload.name
+    assert_equal widget.id, part.widget_id
+    assert_equal [part.id], widget.parts.reload.pluck(:id)
+  end
+
+  def test_upsert_has_many_without_inverse_links_the_record_on_a_new_parent
+    part   = Part.create!(name: 'orig')
+    widget = UpsertFkWidget.new(name: 'w')
+    mapper = UpsertFkPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal 'renamed', part.reload.name
+    assert_equal widget.id, part.widget_id
+  end
+
+  # The collection writer (`parts=`) would write at once on a persisted parent; the map must not.
+  def test_upsert_has_many_without_inverse_does_not_persist_during_map
+    part   = Part.create!(name: 'orig')
+    widget = UpsertFkWidget.create!(name: 'w')
+    UpsertFkPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    part.reload
+    assert_equal 'orig', part.name
+    assert_nil part.widget_id
+  end
+
+  # The owner key of a polymorphic has_many includes its type column.
+  def test_upsert_polymorphic_has_many_links_id_and_type
+    note   = UpsertNote.create!(body: 'orig')
+    widget = UpsertNoteWidget.create!(name: 'w')
+    mapper = UpsertNotesMapper.map_to_model(widget, { notes: [{ id: note.id, body: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    note.reload
+    assert_equal 'renamed', note.body
+    assert_equal [widget.id, 'UpsertNoteWidget'], [note.noteable_id, note.noteable_type]
+  end
+
+  # The has_one writer would link the child at once (its replace saves it): the map must not use it.
+  def test_upsert_has_one_on_a_parent_without_child_does_not_persist_during_map
+    manual = Manual.create!(title: 'orig')
+    widget = Widget.create!(name: 'w')
+    UpsertManualMapper.map_to_model(widget, { manual: { id: manual.id, title: 'renamed' } })
+
+    manual.reload
+    assert_equal 'orig', manual.title
+    assert_nil manual.widget_id
+  end
+
+  def test_upsert_polymorphic_belongs_to_links_id_and_type
+    manual = Manual.create!(title: 'orig')
+    note   = UpsertPolyNote.create!(body: 'n')
+    mapper = UpsertPolyNoteMapper.map_to_model(note, { noteable: { id: manual.id, title: 'renamed' } })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    note.save!
+    note.reload
+    assert_equal [manual.id, 'Manual'], [note.noteable_id, note.noteable_type]
+    assert_equal 'renamed', manual.reload.title
+  end
+
+  # An in-scope element owned by another parent is moved to this one: the owner key is overwritten.
+  def test_upsert_has_many_without_inverse_moves_an_element_from_another_parent
+    other  = UpsertFkWidget.create!(name: 'other')
+    widget = UpsertFkWidget.create!(name: 'w')
+    part   = Part.create!(name: 'orig', widget_id: other.id)
+    mapper = UpsertFkPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal widget.id, part.reload.widget_id
+    assert_equal [part.id], widget.parts.reload.pluck(:id)
+    assert_empty other.parts.reload
+  end
+
+  def test_upsert_polymorphic_has_many_moves_an_element_from_another_type
+    other  = UpsertPolyNote.create!(body: 'other owner')
+    widget = UpsertNoteWidget.create!(name: 'w')
+    note   = UpsertNote.create!(body: 'orig', noteable_id: other.id, noteable_type: 'UpsertPolyNote')
+    mapper = UpsertNotesMapper.map_to_model(widget, { notes: [{ id: note.id, body: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    note.reload
+    assert_equal [widget.id, 'UpsertNoteWidget'], [note.noteable_id, note.noteable_type]
+  end
+
+  # An unsaved parent has no key to give yet: setting the element's owner key would blank it, and an
+  # element that requires its owner would then fail validation although the save would link it.
+  def test_upsert_has_many_without_inverse_moves_a_required_element_onto_a_new_parent
+    other  = UpsertRequiredWidget.create!(name: 'other')
+    part   = UpsertRequiredPart.create!(name: 'orig', widget: other)
+    widget = UpsertRequiredWidget.new(name: 'w')
+    mapper = UpsertRequiredPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    part.reload
+    assert_equal [widget.id, 'renamed'], [part.widget_id, part.name]
   end
 
   # --- map_if ---------------------------------------------------------------
