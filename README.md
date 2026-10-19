@@ -144,7 +144,19 @@ end
 >
 > The attached record is also **linked**: a `belongs_to` gets the parent's foreign key, a 1‑N element
 > gets the parent's key (and the `as:` type column) — set in memory, written by the parent's save,
-> whether or not ActiveRecord detects an inverse for the association.
+> whether or not ActiveRecord detects an inverse for the association. A `has_many :through` or HABTM
+> element is updated in place but **not** linked: its link is a join row, which the upsert does not
+> create — add it through the join model.
+>
+> *Association scope:* an association narrowed by a `where` scope (`has_many :spare_parts,
+> -> { where(name: 'spare') }`, or a scoped `belongs_to` / `has_one`) only ever holds records that
+> match it. A record `allowing` accepts but that scope excludes is **refused** on its id path (e.g.
+> `spare_parts.0.id`) rather than linked outside the association. The scope is weighed on the record
+> as stored, with one read, before the payload is mapped onto it.
+>
+> *Ids are taken as sent:* an id must name its record without a lossy cast — `1` and `"1"` do, while
+> `true`, `"1abc"`, `1.9`, `" 1 "` or `"1.0"`, which `find_by` would read as record 1, are refused on
+> the id path. This holds in reference and upsert mode and for a legacy `type :referential`.
 >
 > *1-1 replace:* mapping never writes to the DB (associations are staged in memory before overall
 > validity is known), so a 1-1 upsert cannot disassociate a `has_one`'s current child (that needs an

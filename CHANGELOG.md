@@ -55,15 +55,20 @@ never affected. An `attribute` assigned through a collection's ids writer (`part
 `has_many :parts`, whatever its `type`, including the deprecated `of :referential`) writes the same
 way and is governed the same way; its ids are compared as ActiveRecord's ids writer reads them, and
 an id that names no record is left to the writer's own `RecordNotFound`. The check runs at assignment,
-on the params as `before_assignation` left them. A value other than `true`/`false`, `immediate_write`
+on the params as `before_assignation` left them; a value it will refuse is already read as `nil`, during
+validation, by the params declared after it (their `map_if`, `authorize`, `allowing`, `required` and
+`default` never weigh a value that does not land), as a param that failed validation is. A value other than `true`/`false`, `immediate_write`
 on a param declared `assign false`, or on anything but a reference `association` or an `attribute`
 named `<collection>_ids`, raises `ConfigurationError`. See issue #13.
 
-- Every mapped attribute/reference is exposed through a **reader** of the same name, defined at
-  declaration time, so a later `allowing`/`map_if`/`with` lambda can read an earlier one by name
-  without a manual `attr_reader` (one the class already defines is kept). Readers are
-  order-dependent (an earlier reference is readable by attributes declared after it; a later one
-  yields `nil`). A `with`-built association gets no reader.
+Every mapped attribute/reference is exposed through a **reader** of the same name, defined at
+declaration time, so a later `allowing`/`map_if`/`with` lambda can read an earlier one by name without
+a manual `attr_reader` (one the class already defines is kept). Readers are order-dependent (an
+earlier reference is readable by attributes declared after it; a later one yields `nil`). A
+`with`-built association gets no reader. A param ending in `_id` that resolves a record — a reference
+`association`, or a scalar legacy `type :referential` — also gets the de-suffixed reader
+(`category_id` ⇒ `category`), since both the id and the record are stored; a `type :referential` list
+(`multiple true`) gets none.
 
 ### Changed
 
@@ -85,22 +90,32 @@ Signed values (`"-5"`, `"+5"`, `-5`) and Float params were rejected before and s
 
 A plain Hash payload is now read indifferently to symbol and string keys, at every level of a `from`
 path, for a sub-mapper's section and for a reference identifier — as an `ActionController::Parameters`
-already was. `{ 'name' => 'x' }` used to be silently ignored by `attribute :name` and now sets it; when
+already was on a `from` path and a sub-mapper's section (a reference section of that class was
+rejected outright in 0.4.1; see Fixed). `{ 'name' => 'x' }` used to be silently ignored by `attribute :name` and now sets it; when
 both forms are present, the key as declared wins — including for a reference identifier, so
 `{ category: { id: nil, 'id' => 1 } }` is now a missing id where it used to find category 1. A list or a scalar where a section is expected still
 raises `TypeError`.
 
-- **Breaking — the `save` option is renamed `assign`** (same meaning, same polarity: `assign false`
-  keeps a validation-only attribute out of `assign_attributes`). `save`, which 0.4.1 accepted, now
-  **raises** `ModelMapper::SaveOptionRenamedError` at class load instead of warning, because it read
-  as persistence (`save_to_model`). Migration: replace `save false` with `assign false`. (Distinct
-  from `SaveOptionRemovedError`, which covers the earlier removal of the `map_to_model(save:)`
-  keyword.) The `ParamConfig#save?` predicate is renamed `assign?` with it, and has no alias.
+**Breaking — the `save` option is renamed `assign`** (same meaning, same polarity: `assign false` keeps
+a validation-only attribute out of `assign_attributes`). `save`, the option's name in 0.4.1, now
+**raises** `ModelMapper::SaveOptionRenamedError` at class load, because it read as persistence
+(`save_to_model`). Migration: replace `save false` with `assign false`. (Distinct from
+`SaveOptionRemovedError`, which covers the earlier removal of the `map_to_model(save:)` keyword.) The
+`ParamConfig#save?` predicate is renamed `assign?` with it, and has no alias.
 
-A `default` or `allowing` lambda whose parameters are all optional or a splat (`->(params = nil)`,
-`->(*args)`, `proc { |a, b| }`) used to be called with no argument and is now handed the source
-params, as `required`, `map_if` and `authorize` hand theirs: `default ->(p = nil) { p ? x : y }` now
-returns `x`.
+Every rule lambda now gets as many of its option's arguments as its signature accepts — positional
+arguments, required or optional — where 0.4.1 picked them from `Proc#arity`, which is negative as soon
+as a signature has an optional argument, so the same lambda was called differently by each option.
+The lists are `(params, target)` for `required`, `(target, params)` for `map_if`, `(params)` for
+`default` and `allowing`, `(value, params)` for the validator of a `type :custom` attribute, and
+`(target, params, value)` for the new `authorize`; the receiver is unchanged (`required` calls the
+lambda, the others `instance_exec` it on the mapper). Calls that raised now work: `->(params, extra = nil)`
+under `default` and `allowing`, `required -> { … }`, `required ->(params = nil) { … }`,
+`map_if ->(target = nil) { … }`, `->(value)` and `-> { … }` as a `type :custom` validator, and a rule
+with an optional keyword (`->(params, k: 1)`). One working call changes: a `default` or `allowing`
+lambda whose parameters are all optional or a splat (`->(params = nil)`, `->(*args)`,
+`proc { |a, b| }`) was called with no argument and is now handed the source params —
+`default ->(p = nil) { p ? x : y }` now returns `x`.
 
 ### Deprecated
 
@@ -117,11 +132,11 @@ once per mapper class and param — because a future release will refuse it inst
 `ModelMapper.reset_explicit_null_warnings!` is superseded by `ModelMapper.reset_deprecation_warnings!`,
 which forgets every kind of deprecation warning; the old name still works and does the same.
 
-- The `identifier` option of 0.4.1 is renamed `id_field` (same meaning: the key read inside the
-  `from` section and the `find_by` column in reference/upsert mode). `identifier` still works and
-  warns once per declaration, at class load; `field`, deprecated since 0.4.1, now points at
-  `id_field`. The 0.4.1 notes listed `condition` → the `if:` option: its replacement is `map_if`,
-  which is what its warning has always named.
+The `identifier` option of 0.4.1 is renamed `id_field` (same meaning: the key read inside the `from`
+section and the `find_by` column in reference/upsert mode). `identifier` still works and warns once per
+declaration, at class load; `field`, deprecated since 0.4.1, now points at `id_field`. The 0.4.1 notes
+listed `condition` → the `if:` option: its replacement is `map_if`, which is what its warning has
+always named.
 
 ### Fixed
 
@@ -153,9 +168,13 @@ the `as:` type column), both in memory, so the map still writes nothing before t
 without an id is still created, an out-of-scope id is still rejected, and `with` alone always creates.
 A 1-1 upsert whose in-scope id names a record other than the parent's current one replaces it on a
 `belongs_to`, where only the parent's foreign key moves; on a `has_one`, whose replacement would nullify
-the old child at once, it is refused on the id path (`cannot_replace_association`). On a `has_many`
-narrowed by a `where` scope, an element `allowing` accepts but that scope excludes is refused on its
-id path too (`outside_association_scope`): linked by its key, it would never appear in the association.
+the old child at once, it is refused on the id path (`cannot_replace_association`). On an association
+narrowed by a `where` scope (`has_many :spare_parts, -> { where(name: 'spare') }`, or a scoped
+`belongs_to` / `has_one`), a record `allowing` accepts but that scope excludes is refused on its id path
+too (`outside_association_scope`): linked by its key, it would never appear in the association. The
+scope is weighed on the record as stored, with one read. A `has_many :through` or HABTM upsert updates
+the element in place but does not link it: no join row is created, so a new link goes through the
+join model.
 
 An `association` in reference or upsert mode given an `ActionController::Parameters` section took the
 whole section as the id, so every such reference was rejected; the section is now read like a Hash.
@@ -168,31 +187,13 @@ now trimmed, and the trimmed string is both checked and cast: a NUL anywhere, in
 A float string that overflows (`"1e400"`, accepted as `Infinity`) is refused too, as a
 `Float::INFINITY` param already was.
 
-A legacy `attribute :category_id do type :referential; allowing … end` stored both `@category_id` and
-`@category`, as the README says, but only an `association` in reference mode got the de-suffixed
-reader: `mapper.category` raised `NoMethodError`. A scalar `type :referential` param ending in `_id`
-now gets the `category` reader too (`nil` while the value is absent); a `type :referential` list
-(`multiple true`) gets none.
-
-`required`, `default` and `allowing` picked a lambda's arguments from `Proc#arity`, which is negative
-as soon as the signature has an optional argument, so the same lambda was called differently by each:
-`->(params, extra = nil)` got `(params, target)` from `required` and raised `ArgumentError` under
-`default` and `allowing`, which handed it nothing. All three now count the positional arguments a
-lambda accepts, as `map_if` and `authorize` already did, and hand it that many of their own list —
-`(params, target)` for `required`, `(params)` for `default` and `allowing`; the receiver is unchanged
-(`required` calls the lambda, the other two `instance_exec` it on the mapper). `required -> { … }`,
-`required ->(params = nil) { … }` and a rule with an optional keyword (`->(params, k: 1)`), which
-raised, now work. The `allowing` of a `type :custom` attribute, a validator, is dispatched the same
-way on its own list, `(value, source_params)`, still `instance_exec`ed on the mapper: `->(value)` and
-`-> { … }`, which raised, now work, and every signature that worked gets what it got.
-
-A value `immediate_write false` refused was refused at assignment, after the whole validation loop, so
-the params declared after it had already read it through its reader: a `map_if`, `authorize`,
-`allowing`, `required` or `default` was weighed on a value that never landed. On a persisted record,
-`parts` refused followed by `association :manual do immediate_write true; map_if -> { parts.present? } end`
-still mapped `manual`, and ActiveRecord wrote it to the database during the map. Such a value is now
-read as `nil` by the params declared after it, as a param that failed validation is; the refusal
-itself still happens at assignment, after `before_assignation`, which sees the value as before.
+A reference id was handed to `find_by`, which casts it to the column type first: on an integer key
+`true`, `"1abc"`, `1.9`, `" 1 "` and `"1.0"` all named record 1, and a scalar `type :referential` given
+a list (`[1, 2]`) took its first element — a record the payload never named, which an upsert would then
+update. An id is now accepted only when its cast reads back as the same text (`1` and `"1"` still are; a
+string `id_field` compares the string as sent), in reference and upsert mode and for a legacy
+`type :referential`; anything else is refused on the id path as an `InvalidValueError`, and a scalar
+`type :referential` refuses a list.
 
 ## 0.4.1
 
