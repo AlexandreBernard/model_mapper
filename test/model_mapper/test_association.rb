@@ -1615,4 +1615,73 @@ class TestAssociation < Minitest::Test
 
     assert(queries.none? { |sql| sql =~ /\A\s*(INSERT|UPDATE|DELETE)/i }, queries.inspect)
   end
+  # --- an id must name its record exactly, not after find_by's cast (owner's decision, batch triage) --
+
+  COERCED_IDS = [true, '%<id>dabc', 1.9, ' %<id>d ', '%<id>d.0'].freeze
+
+  def coerced(template, id)
+    template.is_a?(String) ? format(template, id:) : template
+  end
+
+  # `true` and `1.9` cast to id 1, so the record they would wrongly name is id 1.
+  def category_one
+    Category.find_by(id: 1) || Category.create!(id: 1, name: 'one')
+  end
+
+  def test_reference_refuses_an_id_that_only_matches_once_cast
+    category = category_one
+    COERCED_IDS.each do |template|
+      payload = coerced(template, category.id)
+      mapper  = RefCategoryMapper.map_to_model(Widget.new, { category: { id: payload } })
+
+      assert_equal ['category.id'], mapper.errors.keys, "id #{payload.inspect} was accepted"
+      assert_nil mapper.record.category_id
+    end
+  end
+
+  def test_reference_still_accepts_an_integer_or_its_string
+    category = Category.create!(name: 'one')
+
+    assert_equal category, RefCategoryMapper.map_to_model(Widget.new, { category: { id: category.id } }).record.category
+    assert_equal category, RefCategoryMapper.map_to_model(Widget.new, { category: { id: category.id.to_s } }).record.category
+  end
+
+  def test_reference_by_a_string_column_compares_the_string_as_sent
+    category = Category.create!(name: 'coercion-by-name')
+    mapper   = RefCategoryByNameMapper.map_to_model(Widget.new, { category: { name: 'coercion-by-name' } })
+
+    assert_equal category, mapper.record.category
+  end
+
+  def test_reference_list_refuses_an_element_that_only_matches_once_cast
+    part   = Part.create!(name: 'p')
+    mapper = RefPartsMapper.map_to_model(Widget.new, { parts: [{ id: part.id }, { id: "#{part.id}abc" }] })
+
+    assert_equal ['parts.1.id'], mapper.errors.keys
+  end
+
+  # The case that made it urgent: a coerced id replaced a belongs_to and renamed a record it never named.
+  def test_upsert_refuses_a_coerced_id_instead_of_relinking_the_parent
+    one    = category_one
+    name   = one.name
+    two    = Category.create!(name: 'two')
+    widget = UpsertBtWidget.create!(name: 'w', category_id: two.id)
+    [true, '1abc', 1.9].each do |payload|
+      mapper = UpsertBtMapper.map_to_model(widget, { category: { id: payload, name: 'renamed' } })
+
+      assert_equal ['category.id'], mapper.errors.keys, "id #{payload.inspect} was accepted"
+    end
+    assert_equal two.id, widget.reload.category_id
+    assert_equal name, one.reload.name
+  end
+
+  def test_legacy_referential_refuses_a_list_and_a_coerced_id
+    category = Category.create!(name: 'one', enabled: true)
+    [[category.id, category.id + 1], "#{category.id}x", true].each do |payload|
+      mapper = LegacyRefIdMapper.map_to_model(Widget.new, { category_id: payload })
+
+      assert_equal ['category_id'], mapper.errors.keys, "category_id #{payload.inspect} was accepted"
+    end
+    assert_equal category.id, LegacyRefIdMapper.map_to_model(Widget.new, { category_id: category.id.to_s }).record.category_id
+  end
 end

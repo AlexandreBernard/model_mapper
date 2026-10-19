@@ -1112,6 +1112,14 @@ module ModelMapper
     field = param_config.field_value
     method = param_config.multiple? ? :where : :find_by
 
+    # A scalar referential given a list would match its first element; any id that only matches once
+    # cast names a record the payload never named (see exact_reference_id?).
+    if (!param_config.multiple? && value.respond_to?(:each)) ||
+       Array(value).any? { |id| !exact_reference_id?(model, field, id) }
+      details = I18n.t("errors.invalid_value_details.invalid_referential#{'_in_list' if param_config.multiple?}")
+      raise ModelMapper::InvalidValueError.new(param_config.keys.join('.'), details:)
+    end
+
     result = model.public_send(method, field => value)
 
     result_blank = result.nil? || (result.respond_to?(:empty?) && result.empty?)
@@ -1189,10 +1197,27 @@ module ModelMapper
       )
     end
 
-    record = allowed_values(param_config, source_params).find_by(identifier => id)
+    scope  = allowed_values(param_config, source_params)
+    record = scope.find_by(identifier => id) if exact_reference_id?(scope, identifier, id)
     return record if record
 
     yield ModelMapper::InvalidValueError.new(field_path, details: I18n.t('errors.invalid_value_details.invalid_referential'))
+  end
+
+  # Whether `id` names its column as sent. `find_by` casts the id to the column type first, so on an
+  # integer key `true`, `"1abc"`, `1.9`, `" 1 "` and `"1.0"` would all look up record 1 — a record the
+  # payload never named, which an upsert would then update. The id is accepted only when its cast reads
+  # back as the same text (`1` and `"1"` do; a string column compares the string itself). A record (a
+  # `default` handing records) names itself; a scope whose model cannot be read (not a relation or
+  # model) is left to `find_by`, as before.
+  def exact_reference_id?(scope, column, id)
+    return true if defined?(ActiveRecord::Base) && id.is_a?(ActiveRecord::Base)
+
+    model = extract_model_class(scope)
+    return true unless model.respond_to?(:type_for_attribute)
+
+    cast = model.type_for_attribute(column.to_s).cast(id)
+    !cast.nil? && cast.to_s == id.to_s
   end
 
   # The id of a reference element: the `identifier` key of a section (a Hash or an
