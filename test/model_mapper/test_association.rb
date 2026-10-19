@@ -796,6 +796,29 @@ class TriageLotItemsMapper
 
 end
 
+# A scoped polymorphic belongs_to: its class comes from the record, not from the reflection.
+class TriageScopedPolyNote < ActiveRecord::Base
+
+  self.table_name = 'upsert_notes'
+  belongs_to :noteable, -> { where.not(title: 'draft') }, polymorphic: true, optional: true
+  accepts_nested_attributes_for :noteable
+
+end
+
+class TriageScopedPolyNoteMapper
+
+  include ModelMapper
+
+  map_model do
+    association :noteable_attributes do
+      from :noteable
+      with AssocManualMapper
+      allowing -> { Manual.all }
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -1714,5 +1737,19 @@ class TestAssociation < Minitest::Test
 
     assert_empty mapper.errors
     assert_equal category, mapper.record.category
+  end
+  # ActiveRecord cannot compute the class of a polymorphic belongs_to: the scope is weighed on the class
+  # of the record found, instead of raising out of the non-raising map.
+  def test_upsert_weighs_a_scoped_polymorphic_belongs_to_on_the_record_class
+    note  = TriageScopedPolyNote.create!(body: 'n')
+    kept  = Manual.create!(title: 'kept')
+    draft = Manual.create!(title: 'draft')
+
+    accepted = TriageScopedPolyNoteMapper.map_to_model(note, { noteable: { id: kept.id, title: 'kept' } })
+    assert_predicate accepted, :valid?, accepted.errors.inspect
+
+    refused = TriageScopedPolyNoteMapper.map_to_model(TriageScopedPolyNote.create!(body: 'm'),
+                                                     { noteable: { id: draft.id, title: 'x' } })
+    assert_equal ['noteable.id'], refused.errors.keys
   end
 end

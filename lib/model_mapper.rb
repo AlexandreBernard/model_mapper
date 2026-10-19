@@ -820,9 +820,12 @@ module ModelMapper
     reflection = target.association(assoc.to_sym).reflection
     return false unless reflection.scope
 
-    scope = reflection.scope_for(reflection.klass.unscoped, target)
+    # A polymorphic belongs_to has no class of its own (ActiveRecord refuses to compute it): the scope is
+    # weighed on the class of the record found.
+    klass = reflection.polymorphic? ? record.class : reflection.klass
+    scope = reflection.scope_for(klass.unscoped, target)
     return false if scope.where_clause.empty?
-    return false if scope.exists?(reflection.klass.primary_key => record.id)
+    return false if scope.exists?(klass.primary_key => record.id)
 
     field_path = reference_field_path(param_config, index, param_config.field_value)
     validation_errors[field_path] =
