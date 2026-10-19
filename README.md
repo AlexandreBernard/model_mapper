@@ -202,6 +202,12 @@ end
   refuses by default; see
   [Deprecations](#a-reference-written-during-the-map). Replace such children in the caller, after the
   map succeeded, when the write must wait for validation.
+
+  Under `immediate_write false`, a value that would be refused if it reached the writer as sent reads
+  as `nil` to the params declared after it (their `map_if`, `authorize`, `allowing`, `required`,
+  `default`), as a param that failed validation does — a rule that trips over that `nil` is reported
+  as an error on its own param — so nothing they decide rests on it; `before_assignation` and
+  everything after the loop read it as usual.
 - **Error reporting differs by mode for 1‑N** (worth knowing): a 1‑N **reference** fails fast — the
   first out-of-scope element raises and any already-resolved elements are discarded, so only one
   `name.N.id` is reported. A 1‑N **upsert** collects every out-of-scope id and reports them all. Both
