@@ -864,25 +864,34 @@ module ModelMapper
   # a Float param renders as "-0.25" or "1.0e+20".
   FLOAT_FORMAT = /\A[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\z/
 
+  # Surrounding whitespace a numeric string may carry: Ruby's `\s` (space, \t, \n, \v, \f, \r), exactly what
+  # `to_i`/`to_f` skip. Not `strip`, which also removes a NUL that `to_i`/`to_f` do not skip: "\u000012"
+  # passed the format and cast to 0. The format is checked on the trimmed string, and that same string is cast.
+  NUMBER_PADDING = /\A\s+|\s+\z/
+
   def valid_float_value?(value, param_config, _source_params, _target_object)
     # A real, finite Numeric needs no format check: its `to_s` need not match FLOAT_FORMAT (Rational
     # renders as "1/2"). Complex and non-finite values fall through and fail the format check.
     return value.to_f if value.is_a?(Numeric) && value.real? && value.finite?
 
-    unless value.to_s.strip.match?(FLOAT_FORMAT)
+    number = value.to_s.gsub(NUMBER_PADDING, '')
+    float  = number.to_f if number.match?(FLOAT_FORMAT)
+    # "1e400" matches the format but overflows to Infinity, which a Float::INFINITY param is refused as.
+    unless float&.finite?
       raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'), expected_format: :float)
     end
 
-    value.to_f
+    float
   end
 
   def valid_integer_value?(value, param_config, _source_params, _target_object)
-    unless value.to_s.strip.match?(/\A\d+\z/)
+    number = value.to_s.gsub(NUMBER_PADDING, '')
+    unless number.match?(/\A\d+\z/)
       raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'),
                                                 expected_format: :integer)
     end
 
-    value.to_i
+    number.to_i
   end
 
   def valid_date_value?(value, param_config, _source_params, _target_object)

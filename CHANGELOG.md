@@ -136,6 +136,14 @@ A 1-1 upsert refused any in-scope id differing from the current record, a `belon
 the previous record untouched, so it is now accepted; a `has_one` replacement, which would nullify the
 old child at once, is still refused.
 
+`type :integer` and `type :float` checked their format on the `strip`ped string but cast the raw one.
+`strip` removes a NUL, `to_i`/`to_f` do not skip it, so `"\u000012"` was accepted as `0` and
+`"\u00001.5"` as `0.0`, with no error. Only ASCII whitespace (space, tab, newline, `\v`, `\f`, `\r`) is
+now trimmed, and the trimmed string is both checked and cast: a NUL anywhere, including a trailing one
+(`"12\u0000"`, accepted as `12` before), is an `InvalidFormatError`. `" 12 "` is still `12`.
+A float string that overflows (`"1e400"`, accepted as `Infinity`) is refused too, as a
+`Float::INFINITY` param already was.
+
 ## 0.4.1
 
 ### Added — unified `association`
