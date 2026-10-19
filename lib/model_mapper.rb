@@ -697,6 +697,7 @@ module ModelMapper
       else
         existing = upsert_record(param_config, source_params, sub_source, validation_errors)
         next if existing == :rejected
+        next if existing && outside_association_scope?(target, assoc, existing, param_config, nil, validation_errors)
         next if existing && singular_replace_rejected?(target, assoc, existing, param_config, validation_errors)
 
         run_sub_mapper(target, assoc, sub_source, param_config.mapper_value, context, validation_errors, existing:)
@@ -797,17 +798,22 @@ module ModelMapper
 
   # The owner key of a has_many element, read off the reflection (public API): each foreign key column
   # from the parent's matching primary key column (several under a composite key), and the `as:` type
-  # column of a polymorphic association, which a plain foreign key would leave nil.
+  # column of a polymorphic association, which a plain foreign key would leave nil. A :through or HABTM
+  # collection keeps its owner key on the join row, which the parent's save creates: the element itself
+  # has no such column, so nothing is set on it.
   def assign_owner_key(target, reflection, record)
+    return if reflection.through_reflection?
+
     Array(reflection.foreign_key).zip(Array(reflection.active_record_primary_key)).each do |foreign_key, primary_key|
       record[foreign_key] = target[primary_key]
     end
     record[reflection.type] = target.class.polymorphic_name if reflection.type
   end
 
-  # A has_many narrowed by a `where` scope (`-> { where(name: 'spare') }`) only ever holds records that
-  # match it, but `allowing` may accept one that does not. Linked by its key, that record would never
-  # appear in the association, so it is refused on its id instead. The scope is weighed on the record as
+  # An association narrowed by a `where` scope (`has_many :spare_parts, -> { where(name: 'spare') }`, or a
+  # scoped belongs_to / has_one) only ever holds records that match it, but `allowing` may accept one that
+  # does not. Linked by its key, that record would never appear in the association, so it is refused on
+  # its id instead. The scope is weighed on the record as
   # stored (one read, never a write), not as the payload would rewrite it, and only its own conditions
   # count, not the owner key: the element may still belong to another parent, or to none.
   def outside_association_scope?(target, assoc, record, param_config, index, validation_errors)
@@ -1126,8 +1132,15 @@ module ModelMapper
     end
   end
 
+  # The validator gets as many of `(value, source_params)` as its signature accepts. A Method counts as
+  # one (its own Proc); anything else goes to `instance_exec` as a block, as before `call_rule`: a
+  # missing validator raises there instead of mapping the value to nil.
   def valid_custom_value?(value, param_config, source_params, _target_object)
-    ModelMapper::ParamConfig.call_rule(param_config.allowing_value, self, [value, source_params])
+    rule = param_config.allowing_value
+    rule = rule.to_proc if rule.is_a?(Method)
+    return instance_exec(value, source_params, &rule) unless rule.is_a?(Proc)
+
+    ModelMapper::ParamConfig.call_rule(rule, self, [value, source_params])
   end
 
   # Unified `association` reference mode: resolve the existing record(s) from the payload section,

@@ -221,6 +221,24 @@ class TestRuleDispatch < Minitest::Test
     assert_equal [['ab', { code: 'ab' }]], log
   end
 
+  # A validator is any callable `instance_exec` accepts as a block, not only a Proc: a Method is run, never
+  # assigned as the value.
+  module Upcase
+
+    def self.call(value, _params = nil) = value.upcase
+
+  end
+
+  def test_custom_runs_a_method_validator
+    mapper = map(custom_mapper(Upcase.method(:call)), { code: 'ab' })
+
+    assert_equal 'AB', mapper.record.code
+  end
+
+  def test_custom_without_a_validator_still_raises
+    assert_raises(LocalJumpError) { map(mapper_class { attribute(:code) { type :custom } }, { code: 'ab' }) }
+  end
+
   def test_custom_still_raises_on_a_rule_requiring_three_arguments
     assert_raises(ArgumentError) { map(custom_mapper(->(_a, _b, _c) { 'x' }), { code: 'ab' }) }
   end

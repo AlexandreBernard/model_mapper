@@ -568,6 +568,234 @@ class UpsertSparePartsMapper
 
 end
 
+# --- triage of the batch reviews: 1-1 where scopes, through/HABTM upserts, owner key sources ----------
+
+ActiveRecord::Schema.define do
+  create_table :triage_tags, force: true do |t|
+    t.string :name
+  end
+  create_table :triage_taggings, force: true do |t|
+    t.integer :widget_id
+    t.integer :triage_tag_id
+  end
+  create_table :triage_tags_widgets, id: false, force: true do |t|
+    t.integer :widget_id
+    t.integer :triage_tag_id
+  end
+  create_table :triage_sti_owners, force: true do |t|
+    t.string :type
+    t.string :name
+  end
+  create_table :triage_lots, primary_key: %i[shop_id lot_no], force: true do |t|
+    t.integer :shop_id
+    t.integer :lot_no
+    t.string :name
+  end
+  create_table :triage_lot_items, force: true do |t|
+    t.integer :lot_shop_id
+    t.integer :lot_lot_no
+    t.string :name
+  end
+end
+
+class TriageTag < ActiveRecord::Base; end
+
+class TriageTagging < ActiveRecord::Base
+
+  belongs_to :triage_tag
+  belongs_to :widget, class_name: 'TriageThroughWidget', optional: true
+
+end
+
+class TriageTagMapper
+
+  include ModelMapper
+
+  map_model { attribute :name }
+
+end
+
+# has_many :through — the owner key belongs to the join model, not to the tag.
+class TriageThroughWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :triage_taggings, foreign_key: 'widget_id'
+  has_many :triage_tags, through: :triage_taggings
+  accepts_nested_attributes_for :triage_tags
+
+end
+
+class TriageHabtmWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_and_belongs_to_many :triage_tags, join_table: 'triage_tags_widgets', foreign_key: 'widget_id'
+  accepts_nested_attributes_for :triage_tags
+
+end
+
+class TriageTagsUpsertMapper
+
+  include ModelMapper
+
+  map_model do
+    association :triage_tags_attributes, many: true do
+      from :triage_tags
+      with TriageTagMapper
+      allowing -> { TriageTag.all }
+    end
+  end
+
+end
+
+# belongs_to and has_one narrowed by a `where` scope.
+class TriageScopedBtWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  belongs_to :category, -> { where(enabled: true) }, optional: true
+  accepts_nested_attributes_for :category
+
+end
+
+class TriageScopedBtMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category_attributes do
+      from :category
+      with UpsertBtCategoryMapper
+      allowing -> { Category.all }
+    end
+  end
+
+end
+
+class TriageScopedHasOneWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_one :manual, -> { where(title: 'main') }, foreign_key: 'widget_id'
+  accepts_nested_attributes_for :manual
+
+end
+
+class TriageScopedHasOneMapper
+
+  include ModelMapper
+
+  map_model do
+    association :manual_attributes do
+      from :manual
+      with AssocManualMapper
+      allowing -> { Manual.all }
+    end
+  end
+
+end
+
+# A scope that reads its owner.
+class TriageOwnerScopedWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :coded_parts, ->(widget) { where(name: widget.code) }, class_name: 'Part', foreign_key: 'widget_id'
+  accepts_nested_attributes_for :coded_parts
+
+end
+
+class TriageOwnerScopedMapper
+
+  include ModelMapper
+
+  map_model do
+    association :coded_parts_attributes, many: true do
+      from :coded_parts
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+  end
+
+end
+
+# A has_many keyed on a parent column other than its id.
+class TriagePkWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :parts, -> { order(:id) }, foreign_key: 'widget_id', primary_key: 'quantity'
+  accepts_nested_attributes_for :parts
+
+end
+
+class TriagePkMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+  end
+
+end
+
+# A polymorphic has_many on an STI owner: the type column holds the base class.
+class TriageStiOwner < ActiveRecord::Base
+
+  has_many :notes, -> { order(:id) }, as: :noteable, class_name: 'UpsertNote'
+  accepts_nested_attributes_for :notes
+
+end
+
+class TriageStiChild < TriageStiOwner; end
+
+class TriageStiNotesMapper
+
+  include ModelMapper
+
+  map_model do
+    association :notes_attributes, many: true do
+      from :notes
+      with UpsertNoteBodyMapper
+      allowing -> { UpsertNote.all }
+    end
+  end
+
+end
+
+# A composite-key owner: both foreign key columns come from both primary key columns.
+class TriageLotItem < ActiveRecord::Base; end
+
+class TriageLot < ActiveRecord::Base
+
+  self.primary_key = %i[shop_id lot_no]
+  has_many :items, -> { order(:id) }, class_name: 'TriageLotItem',
+                                       foreign_key: %i[lot_shop_id lot_lot_no], primary_key: %i[shop_id lot_no]
+  accepts_nested_attributes_for :items
+
+end
+
+class TriageLotItemMapper
+
+  include ModelMapper
+
+  map_model { attribute :name }
+
+end
+
+class TriageLotItemsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :items_attributes, many: true do
+      from :items
+      with TriageLotItemMapper
+      allowing -> { TriageLotItem.all }
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -1270,4 +1498,121 @@ class TestAssociation < Minitest::Test
     assert(queries.none? { |sql| sql =~ /\A\s*(INSERT|UPDATE|DELETE)/i }, queries.inspect)
   end
 
+  # --- triage of the batch reviews -------------------------------------------------------------------
+
+  # The owner key of a :through or HABTM collection lives on the join row: the upsert must not write it
+  # onto the element (it raised MissingAttributeError / UnknownPrimaryKey), and the map stays write-free.
+  def test_upsert_through_collection_maps_without_raising
+    tag    = TriageTag.create!(name: 'orig')
+    widget = TriageThroughWidget.create!(name: 'w')
+    mapper = TriageTagsUpsertMapper.map_to_model(widget, { triage_tags: [{ id: tag.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    assert_equal 'orig', tag.reload.name
+  end
+
+  def test_upsert_habtm_collection_maps_without_raising
+    tag    = TriageTag.create!(name: 'orig')
+    widget = TriageHabtmWidget.create!(name: 'w')
+    mapper = TriageTagsUpsertMapper.map_to_model(widget, { triage_tags: [{ id: tag.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    assert_equal 'orig', tag.reload.name
+  end
+
+  # The where-scope refusal holds for a 1-1 association too (owner's decision, batch triage).
+  def test_upsert_refuses_a_belongs_to_record_outside_its_where_scope
+    off    = Category.create!(name: 'off', enabled: false)
+    widget = TriageScopedBtWidget.create!(name: 'w')
+    mapper = TriageScopedBtMapper.map_to_model(widget, { category: { id: off.id } })
+
+    assert_equal ['category.id'], mapper.errors.keys
+    assert_equal I18n.t('errors.invalid_value_details.outside_association_scope'), mapper.errors['category.id'].details
+    assert_nil widget.category_id
+  end
+
+  def test_upsert_accepts_a_belongs_to_record_inside_its_where_scope
+    on     = Category.create!(name: 'on', enabled: true)
+    widget = TriageScopedBtWidget.create!(name: 'w')
+    mapper = TriageScopedBtMapper.map_to_model(widget, { category: { id: on.id } })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    assert_equal on.id, widget.reload.category_id
+  end
+
+  def test_upsert_refuses_a_has_one_record_outside_its_where_scope
+    other  = Manual.create!(title: 'other')
+    widget = TriageScopedHasOneWidget.create!(name: 'w')
+    mapper = TriageScopedHasOneMapper.map_to_model(widget, { manual: { id: other.id, title: 'x' } })
+
+    assert_equal ['manual.id'], mapper.errors.keys
+    assert_nil other.reload.widget_id
+    assert_equal 'other', other.title
+  end
+
+  def test_upsert_accepts_a_has_one_record_inside_its_where_scope
+    main   = Manual.create!(title: 'main')
+    widget = TriageScopedHasOneWidget.create!(name: 'w')
+    mapper = TriageScopedHasOneMapper.map_to_model(widget, { manual: { id: main.id } })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+  end
+
+  # A scope that reads its owner is evaluated for THIS owner.
+  def test_upsert_weighs_an_owner_dependent_scope_on_the_parent
+    widget = TriageOwnerScopedWidget.create!(name: 'w', code: 'abc')
+    inside = Part.create!(name: 'abc')
+    outside = Part.create!(name: 'zzz')
+    mapper = TriageOwnerScopedMapper.map_to_model(widget, { coded_parts: [{ id: inside.id }, { id: outside.id }] })
+
+    assert_equal ['coded_parts.1.id'], mapper.errors.keys
+  end
+
+  # The owner key comes from the column the association names, not the parent's id.
+  def test_upsert_owner_key_reads_the_association_primary_key
+    widget = TriagePkWidget.create!(name: 'w', quantity: 77)
+    part   = Part.create!(name: 'orig')
+    mapper = TriagePkMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    assert_equal 77, part.reload.widget_id
+  end
+
+  def test_upsert_polymorphic_owner_key_names_the_sti_base_class
+    owner  = TriageStiChild.create!(name: 'child')
+    note   = UpsertNote.create!(body: 'orig')
+    mapper = TriageStiNotesMapper.map_to_model(owner, { notes: [{ id: note.id, body: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    owner.save!
+    assert_equal [owner.id, 'TriageStiOwner'], note.reload.values_at(:noteable_id, :noteable_type)
+  end
+
+  def test_upsert_owner_key_sets_every_column_of_a_composite_key
+    lot    = TriageLot.create!(shop_id: 3, lot_no: 9, name: 'lot')
+    item   = TriageLotItem.create!(name: 'orig')
+    mapper = TriageLotItemsMapper.map_to_model(lot, { items: [{ id: item.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    lot.save!
+    assert_equal [3, 9], item.reload.values_at(:lot_shop_id, :lot_lot_no)
+  end
+
+  # Accepted elements are staged in memory too: an in-scope upsert on a persisted parent and an upsert
+  # onto a new parent issue no INSERT/UPDATE/DELETE before the save.
+  def test_upsert_staging_writes_nothing_during_the_map
+    widget = UpsertSpareWidget.create!(name: 'w')
+    spare  = Part.create!(name: 'spare')
+    loose  = Part.create!(name: 'loose')
+    queries = []
+    callback = ->(*, payload) { queries << payload[:sql] unless payload[:name] == 'SCHEMA' }
+    ActiveSupport::Notifications.subscribed(callback, 'sql.active_record') do
+      UpsertSparePartsMapper.map_to_model(widget, { spare_parts: [{ id: spare.id, name: 'spare' }] })
+      UpsertFkPartsMapper.map_to_model(UpsertFkWidget.new(name: 'new'), { parts: [{ id: loose.id, name: 'x' }] })
+    end
+
+    assert(queries.none? { |sql| sql =~ /\A\s*(INSERT|UPDATE|DELETE)/i }, queries.inspect)
+  end
 end
