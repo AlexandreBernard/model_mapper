@@ -160,16 +160,21 @@ module ModelMapper
     # order-dependent — an earlier association is only readable by params declared AFTER it.
     #
     # Two kinds of param get NO reader, because they are never stored as an ivar: associations built via
-    # a sub-mapper (`with`, assigned straight onto the target). A reference whose param ends in `_id`
-    # additionally gets the de-suffixed object reader (`category_id` ⇒ also `category`), since that mode
-    # stores both. Never overrides a reader the class already defines.
+    # a sub-mapper (`with`, assigned straight onto the target). A param ending in `_id` that resolves to a
+    # record — a reference, or a legacy scalar `type :referential` — additionally gets the
+    # de-suffixed object reader (`category_id` ⇒ also `category`), since the run stores both (see
+    # `run_mapping`). Never overrides a reader the class already defines.
     def define_param_readers(config)
       config.params.each_value do |param_config|
         next if param_config.mapper?
 
-        readers = [param_config.name.to_s]
-        readers << param_config.name.to_s.delete_suffix('_id') if param_config.reference? &&
-                                                                   param_config.name.to_s.end_with?('_id')
+        name = param_config.name.to_s
+        # A `:referential` list holds several records, not one, so it gets no de-suffixed object reader.
+        # A reference keeps the reader whatever its cardinality, as it did before the legacy case joined.
+        single_record = param_config.reference? ||
+                        (param_config.type_value == :referential && !param_config.multiple?)
+        readers = [name]
+        readers << name.delete_suffix('_id') if single_record && name.end_with?('_id')
         readers.each do |reader|
           next if method_defined?(reader) || private_method_defined?(reader)
 
@@ -285,6 +290,7 @@ module ModelMapper
     validated_params = {}
     validation_errors = {}
     errored_fields = [] # param names that produced a mapper error — used to dedup record errors
+    withheld = {} # param name => validated value whose ivar waits for the loop's end (see below)
     config.params.each do |param_name, param_config|
       # Skip param if condition is not met
       next unless param_config.condition_met?(target_object, source_params, self)
@@ -343,9 +349,10 @@ module ModelMapper
         next
       rescue StandardError => e
         # Errors from user-provided lambdas (e.g. allowing, required) that depend on
-        # previously-failed attributes. Only accumulate if there are already validation errors,
-        # otherwise re-raise as it's likely a genuine bug.
-        raise if validation_errors.empty?
+        # previously-failed attributes. Only accumulate if there are already validation errors — or a
+        # refusal pending at assignment, whose value is withheld below — otherwise re-raise as it's
+        # likely a genuine bug.
+        raise if validation_errors.empty? && withheld.empty?
 
         field = param_config.keys.join('.')
         validation_errors[field] = ModelMapper::InvalidValueError.new(field, details: e.message)
@@ -353,33 +360,25 @@ module ModelMapper
         next
       end
 
-      # Store as instance variable for use by later attributes/defaults/hooks in the same mapping and
-      # by the readers auto-defined in `map_model` (e.g. an `association :call_origin` resolved here is
-      # read by name in a later attribute's `allowing`/`default`). A resolved reference whose param
-      # ends in `_id` also stores the de-suffixed object (`@company_id` + `@company`).
-      if defined?(ActiveRecord::Base) && value.is_a?(ActiveRecord::Base) && param_name.to_s.end_with?('_id')
-        instance_variable_set(:"@#{param_name}", value.id)
-        instance_variable_set(:"@#{param_name.to_s.delete_suffix('_id')}", value)
+      # Skip nil values when not required — unless the payload asked to clear the value. Only an
+      # assignable param enters the assignment hash.
+      assigned = param_config.assign? && !(value.nil? && allow_nil && !cleared)
+
+      # A value `immediate_write false` will refuse at assignment if it reaches the writer as is: its
+      # ivar is withheld until the loop ends, so the rules of the params declared after this one read it
+      # as nil — as they read a param that failed validation — instead of weighing a value that is
+      # about to be refused. The refusal itself stays at assignment (guard_immediate_writes!).
+      if assigned && param_config.immediate_write_value == false &&
+         immediate_write_foreseen?(target_object, param_config, assignment_value(param_config, value))
+        withheld[param_name] = value
       else
-        instance_variable_set(:"@#{param_name}", value)
+        store_param_ivars(param_name, value)
       end
+      next unless assigned
 
-      # Skip nil values when not required — unless the payload asked to clear the value
-      next if value.nil? && allow_nil && !cleared
-
-      # Only include in the assignment hash when this param is assignable
-      next unless param_config.assign?
-
-      # For referential types, extract the ID for assignment (scalar → id, array → array of ids).
-      validated_params[param_name] =
-        if param_config.type_value == :referential && value.respond_to?(:id)
-          value.id
-        elsif param_config.array? && param_config.of_value == :referential
-          value.map { |element| element.respond_to?(:id) ? element.id : element }
-        else
-          value
-        end
+      validated_params[param_name] = assignment_value(param_config, value)
     end
+    withheld.each { |param_name, value| store_param_ivars(param_name, value) }
 
     # Combined validation — return mapper-rule errors AND the target's own (ActiveModel/ActiveRecord)
     # errors together, so a single call surfaces everything. We assemble the target (assign the
@@ -428,6 +427,41 @@ module ModelMapper
     end
   end
 
+  # Store as instance variable for use by later attributes/defaults/hooks in the same mapping and by the
+  # readers auto-defined in `map_model` (e.g. an `association :call_origin` resolved here is read by name
+  # in a later attribute's `allowing`/`default`). A resolved reference whose param ends in `_id` also
+  # stores the de-suffixed object (`@company_id` + `@company`).
+  def store_param_ivars(param_name, value)
+    if defined?(ActiveRecord::Base) && value.is_a?(ActiveRecord::Base) && param_name.to_s.end_with?('_id')
+      instance_variable_set(:"@#{param_name}", value.id)
+      instance_variable_set(:"@#{param_name.to_s.delete_suffix('_id')}", value)
+    else
+      instance_variable_set(:"@#{param_name}", value)
+    end
+  end
+
+  # What a validated value puts in the assignment hash: for referential types, the ID (scalar → id,
+  # array → array of ids); anything else as is.
+  def assignment_value(param_config, value)
+    if param_config.type_value == :referential && value.respond_to?(:id)
+      value.id
+    elsif param_config.array? && param_config.of_value == :referential
+      value.map { |element| element.respond_to?(:id) ? element.id : element }
+    else
+      value
+    end
+  end
+
+  # Whether assigning `value` would write now, foreseen during the validation loop. It reads the current
+  # records without loading them onto the association, so the check at assignment still loads them after
+  # before_assignation (a child the hook attaches is seen there). An error is not foreseen: the check at
+  # assignment meets it again and lets it propagate as the writer's own would.
+  def immediate_write_foreseen?(target, param_config, value)
+    immediate_write?(target, param_config, value, peek: true)
+  rescue StandardError
+    false
+  end
+
   def guard_immediate_write!(target, param_config, value)
     return if param_config.immediate_write_value == true
     return unless immediate_write?(target, param_config, value)
@@ -447,25 +481,25 @@ module ModelMapper
   # records are equal by class and id (`eql?`), another order writes nothing, and an unsaved record in
   # the current target is never written by the replace; a repeated record writes nothing on a has_many
   # but adds a join row on a :through or HABTM (see collection_keys).
-  def immediate_write?(target, param_config, value)
+  def immediate_write?(target, param_config, value, peek: false)
     return false unless target.respond_to?(:persisted?) && target.persisted?
     return false unless target.class.respond_to?(:reflect_on_association)
 
     if param_config.reference?
-      reference_write?(target, param_config, value)
+      reference_write?(target, param_config, value, peek:)
     elsif (reflection = ids_writer_reflection(target.class, param_config.name))
-      ids_write?(target, reflection, value)
+      ids_write?(target, reflection, value, peek:)
     else
       false
     end
   end
 
-  def reference_write?(target, param_config, value)
+  def reference_write?(target, param_config, value, peek: false)
     reflection = target.class.reflect_on_association(param_config.name)
     return false if reflection.nil? || reflection.macro == :belongs_to
 
     association = target.association(reflection.name)
-    current = current_association_records(association, reflection)
+    current = current_association_records(association, reflection, peek:)
     if reflection.collection?
       collection_keys(association, record_keys(Array(value))) !=
         collection_keys(association, record_keys(current.reject(&:new_record?)))
@@ -487,7 +521,7 @@ module ModelMapper
   # one of them names no record, when it raises RecordNotFound before replacing anything. The deprecated
   # `of :referential` validates into records, but they are assigned as their ids (see run_mapping), and
   # those ids are what is read here.
-  def ids_write?(target, reflection, value)
+  def ids_write?(target, reflection, value, peek: false)
     columns = Array(reflection.association_primary_key)
     types = columns.map { |column| reflection.klass.type_for_attribute(column) }
     cast = lambda do |id|
@@ -498,7 +532,7 @@ module ModelMapper
 
     ids = Array(value).reject(&:blank?).map(&cast)
     association = target.association(reflection.name)
-    current = current_association_records(association, reflection).reject(&:new_record?).map(&key_of)
+    current = current_association_records(association, reflection, peek:).reject(&:new_record?).map(&key_of)
     return false if collection_keys(association, ids) == collection_keys(association, current)
 
     # The writer's own lookup: `klass.where(key => ids)`, every distinct id matched by one record.
@@ -515,8 +549,14 @@ module ModelMapper
   # loads them, so the writer then diffs against the very records checked here (not a fresh read that may
   # hold a child attached in between), and a `strict_loading` owner behaves as it does without the check:
   # a collection's replace skips strict loading (private API, hence `send`; an ActiveRecord without it
-  # does not skip either), a has_one's replace raises StrictLoadingViolationError.
-  def current_association_records(association, reflection)
+  # does not skip either), a has_one's replace raises StrictLoadingViolationError. `peek` reads them
+  # without loading the association: the loaded target if any, else a query on the association's scope.
+  def current_association_records(association, reflection, peek: false)
+    if peek
+      return association.target if association.loaded?
+
+      return reflection.collection? ? association.scope.to_a : association.scope.first
+    end
     if reflection.collection? && association.respond_to?(:skip_strict_loading, true)
       association.send(:skip_strict_loading) { association.load_target }
     else
@@ -649,6 +689,7 @@ module ModelMapper
         sub_source.each_with_index do |item, index|
           existing = upsert_record(param_config, source_params, item, validation_errors, index:)
           next if existing == :rejected
+          next if existing && outside_association_scope?(target, assoc, existing, param_config, index, validation_errors)
 
           run_sub_mapper(target, assoc, item, param_config.mapper_value, context, validation_errors,
                          index:, existing:)
@@ -656,6 +697,7 @@ module ModelMapper
       else
         existing = upsert_record(param_config, source_params, sub_source, validation_errors)
         next if existing == :rejected
+        next if existing && outside_association_scope?(target, assoc, existing, param_config, nil, validation_errors)
         next if existing && singular_replace_rejected?(target, assoc, existing, param_config, validation_errors)
 
         run_sub_mapper(target, assoc, sub_source, param_config.mapper_value, context, validation_errors, existing:)
@@ -663,14 +705,19 @@ module ModelMapper
     end
   end
 
-  # A 1-1 upsert may update the parent's current child in place, but it must NOT reassign a DIFFERENT
-  # in-scope record: mapping is write-free (see attach_existing_record), so it cannot disassociate the
-  # old child (a has_one replace always writes), and silently attaching the new one would orphan the old
-  # child on the parent's later save. So we reject a differing in-scope id with a params-path error
-  # (e.g. "manual.id") and leave a genuine 1-1 replacement to the caller. Attaching to a parent with no
-  # current child, or updating the same child, is fine. `load_target` only reads (no write).
+  # A has_one upsert may update the parent's current child in place, but it must NOT reassign a
+  # DIFFERENT in-scope record: mapping is write-free (see attach_existing_record), so it cannot
+  # disassociate the old child (a has_one replace always writes), and silently attaching the new one
+  # would orphan the old child on the parent's later save. So we reject a differing in-scope id with a
+  # params-path error (e.g. "manual.id") and leave a genuine has_one replacement to the caller. Attaching
+  # to a parent with no current child, or updating the same child, is fine. A belongs_to is never
+  # refused: the owner holds the foreign key, so replacing it only moves that key in memory and leaves
+  # the previous record untouched. `load_target` only reads (no write).
   def singular_replace_rejected?(target, assoc, record, param_config, validation_errors)
-    current = target.association(assoc.to_sym).load_target
+    association = target.association(assoc.to_sym)
+    return false if association.reflection.belongs_to?
+
+    current = association.load_target
     return false if current.nil? || current == record
 
     field_path = reference_field_path(param_config, nil, param_config.field_value)
@@ -681,35 +728,19 @@ module ModelMapper
   end
 
   # Decide the fate of an element under an upsert (`with` + `allowing`) by looking its identifier up in
-  # the `allowing` scope — the SAME reference-style `find_by` lookup used by 1-1/1-N references, so both
-  # modes accept the same `allowing` shapes:
+  # the `allowing` scope — the SAME lookup as 1-1/1-N references (lookup_reference), so both modes accept
+  # the same `allowing` shapes and refuse the same identifiers:
   #   - not an upsert, or no identifier → nil       (CREATE: a fresh nested record is built)
   #   - identifier found in scope       → the record (UPDATE: it is attached + updated by the caller)
   #   - identifier out of scope         → :rejected (a per-element error is recorded; element skipped)
   def upsert_record(param_config, source_params, element, validation_errors, index: nil)
     return nil unless param_config.upsert?
 
-    identifier = param_config.field_value
-    id         = reference_id(element, identifier)
-    return nil if id.nil? || (id.respond_to?(:empty?) && id.empty?)
-
-    field_path = reference_field_path(param_config, index, identifier)
-
-    # Same refusal as the reference path: a list or a section reaches `find_by` as-is and silently
-    # matches one of its elements, turning the element into an UPDATE of a record it never named.
-    if id.respond_to?(:each)
-      validation_errors[field_path] =
-        ModelMapper::InvalidValueError.new(field_path,
-                                           details: I18n.t('errors.invalid_value_details.reference_id_not_scalar'))
-      return :rejected
+    field_path = reference_field_path(param_config, index, param_config.field_value)
+    lookup_reference(element, param_config, source_params, field_path) do |error|
+      validation_errors[field_path] = error
+      :rejected
     end
-
-    record = allowed_values(param_config, source_params).find_by(identifier => id)
-    return record if record
-
-    validation_errors[field_path] =
-      ModelMapper::InvalidValueError.new(field_path, details: I18n.t('errors.invalid_value_details.invalid_referential'))
-    :rejected
   end
 
   # Map the sub-payload onto a nested record and fold the sub-mapper's combined errors into the parent
@@ -732,24 +763,78 @@ module ModelMapper
     index ? target.public_send(assoc).build : target.public_send(:"build_#{assoc}")
   end
 
-  # Stage an existing (upsert-update) record onto the association in memory, WITHOUT persisting: the
-  # collection case adds it to the loaded target, the singular case sets it as the association target.
-  # The parent's save then cascades the update through accepts_nested_attributes_for's autosave.
+  # Stage an existing (upsert-update) record onto the association in memory, WITHOUT persisting, and link
+  # it, so that the parent's save both cascades the update (accepts_nested_attributes_for's autosave)
+  # and writes the foreign key:
+  #   - belongs_to: the `assoc=` writer, which on a belongs_to only sets the owner's foreign key (and a
+  #     polymorphic type), the inverse and the target — the key is written by the parent's save. A
+  #     differing current record is simply replaced; it is left untouched.
+  #   - collection: added to the loaded target, then `assign_owner_key` sets the owner key on the record
+  #     (and the `as:` type column). `add_to_target` alone links it only
+  #     through an inverse ActiveRecord detects, which a scoped has_many or an explicit `foreign_key:`
+  #     lacks, and the autosave of an already-persisted element never sets the key. An unsaved parent
+  #     has no key to give yet — setting it would blank the element's current owner and fail a
+  #     required belongs_to — so it is left to `insert_record`, which sets it at save.
+  #   - has_one: set as the association target; its autosave always writes the key.
   #
   # Strictly in-memory on purpose: associations are mapped inside `run_mapping`, before overall validity
   # is known, so writing here would mutate the DB on a map that later fails validation (and never
   # persists) — breaking the "map doesn't persist" contract with no rollback. We therefore never use the
-  # `assoc=` writer (its has_one replace immediately nullifies a previous child — a write we must not do
-  # here). For 1-1 this only ever attaches to a parent with no current child, or updates the SAME child;
-  # a differing in-scope id is rejected upstream (see singular_replace_rejected?), so no old child is
-  # ever orphaned.
+  # collection writer (`parts=` writes at once on a persisted parent) nor the has_one writer (its replace
+  # immediately nullifies a previous child). A has_one upsert only ever attaches to a parent with no
+  # current child, or updates the SAME child; a differing in-scope id is rejected upstream (see
+  # singular_replace_rejected?), so no old child is ever orphaned.
   def attach_existing_record(target, assoc, record, index)
     association = target.association(assoc.to_sym)
     if index
       association.add_to_target(record)
+      assign_owner_key(target, association.reflection, record) if target.persisted?
+    elsif association.reflection.belongs_to?
+      target.public_send(:"#{assoc}=", record)
     else
       association.target = record
     end
+  end
+
+  # The owner key of a has_many element, read off the reflection (public API): each foreign key column
+  # from the parent's matching primary key column (several under a composite key), and the `as:` type
+  # column of a polymorphic association, which a plain foreign key would leave nil. A :through or HABTM
+  # collection keeps its owner key on the join row, which the parent's save creates: the element itself
+  # has no such column, so nothing is set on it.
+  def assign_owner_key(target, reflection, record)
+    return if reflection.through_reflection?
+
+    Array(reflection.foreign_key).zip(Array(reflection.active_record_primary_key)).each do |foreign_key, primary_key|
+      record[foreign_key] = target[primary_key]
+    end
+    record[reflection.type] = target.class.polymorphic_name if reflection.type
+  end
+
+  # An association narrowed by a `where` scope (`has_many :spare_parts, -> { where(name: 'spare') }`, or a
+  # scoped belongs_to / has_one) only ever holds records that match it, but `allowing` may accept one that
+  # does not. Linked by its key, that record would never appear in the association, so it is refused on
+  # its id instead. The scope is weighed on the record as
+  # stored (one read, never a write), not as the payload would rewrite it, and only its own conditions
+  # count, not the owner key: the element may still belong to another parent, or to none.
+  def outside_association_scope?(target, assoc, record, param_config, index, validation_errors)
+    reflection = target.association(assoc.to_sym).reflection
+    # A :through or HABTM upsert never links its element (no join row is created), and its scope may
+    # filter on the join table, which the element's table alone cannot evaluate: nothing to weigh.
+    return false if reflection.scope.nil? || reflection.through_reflection?
+
+    # A polymorphic belongs_to has no class of its own (ActiveRecord refuses to compute it): the scope is
+    # weighed on the class of the record found.
+    klass = reflection.polymorphic? ? record.class : reflection.klass
+    scope = reflection.scope_for(klass.unscoped, target)
+    return false if scope.where_clause.empty?
+    # Wrapped in a list so that a composite primary key (an array of columns) matches its array of values.
+    return false if scope.exists?(klass.primary_key => [record.id])
+
+    field_path = reference_field_path(param_config, index, param_config.field_value)
+    validation_errors[field_path] =
+      ModelMapper::InvalidValueError.new(field_path,
+                                         details: I18n.t('errors.invalid_value_details.outside_association_scope'))
+    true
   end
 
   # Wrap persistence with the before_save/after_save hooks.
@@ -862,25 +947,34 @@ module ModelMapper
   # a Float param renders as "-0.25" or "1.0e+20".
   FLOAT_FORMAT = /\A[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\z/
 
+  # Surrounding whitespace a numeric string may carry: Ruby's `\s` (space, \t, \n, \v, \f, \r), exactly what
+  # `to_i`/`to_f` skip. Not `strip`, which also removes a NUL that `to_i`/`to_f` do not skip: "\u000012"
+  # passed the format and cast to 0. The format is checked on the trimmed string, and that same string is cast.
+  NUMBER_PADDING = /\A\s+|\s+\z/
+
   def valid_float_value?(value, param_config, _source_params, _target_object)
     # A real, finite Numeric needs no format check: its `to_s` need not match FLOAT_FORMAT (Rational
     # renders as "1/2"). Complex and non-finite values fall through and fail the format check.
     return value.to_f if value.is_a?(Numeric) && value.real? && value.finite?
 
-    unless value.to_s.strip.match?(FLOAT_FORMAT)
+    number = value.to_s.gsub(NUMBER_PADDING, '')
+    float  = number.to_f if number.match?(FLOAT_FORMAT)
+    # "1e400" matches the format but overflows to Infinity, which a Float::INFINITY param is refused as.
+    unless float&.finite?
       raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'), expected_format: :float)
     end
 
-    value.to_f
+    float
   end
 
   def valid_integer_value?(value, param_config, _source_params, _target_object)
-    unless value.to_s.strip.match?(/\A\d+\z/)
+    number = value.to_s.gsub(NUMBER_PADDING, '')
+    unless number.match?(/\A\d+\z/)
       raise ModelMapper::InvalidFormatError.new(param_config.keys.join('.'),
                                                 expected_format: :integer)
     end
 
-    value.to_i
+    number.to_i
   end
 
   def valid_date_value?(value, param_config, _source_params, _target_object)
@@ -1024,6 +1118,16 @@ module ModelMapper
     field = param_config.field_value
     method = param_config.multiple? ? :where : :find_by
 
+    # A scalar referential given a list would match its first element; any id that only matches once
+    # cast names a record the payload never named (see exact_reference_id?).
+    # A blank element (the "" a Rails form's hidden field sends before the checked ids) names nothing
+    # and `where` ignores it: it is not weighed.
+    if (!param_config.multiple? && value.respond_to?(:each)) ||
+       Array(value).reject { |id| id.nil? || id == '' }.any? { |id| !exact_reference_id?(model, field, id) }
+      details = I18n.t("errors.invalid_value_details.invalid_referential#{'_in_list' if param_config.multiple?}")
+      raise ModelMapper::InvalidValueError.new(param_config.keys.join('.'), details:)
+    end
+
     result = model.public_send(method, field => value)
 
     result_blank = result.nil? || (result.respond_to?(:empty?) && result.empty?)
@@ -1044,8 +1148,15 @@ module ModelMapper
     end
   end
 
+  # The validator gets as many of `(value, source_params)` as its signature accepts. A Method counts as
+  # one (its own Proc); anything else goes to `instance_exec` as a block, as before `call_rule`: a
+  # missing validator raises there instead of mapping the value to nil.
   def valid_custom_value?(value, param_config, source_params, _target_object)
-    instance_exec(value, source_params, &param_config.allowing_value)
+    rule = param_config.allowing_value
+    rule = rule.to_proc if rule.is_a?(Method)
+    return instance_exec(value, source_params, &rule) unless rule.is_a?(Proc)
+
+    ModelMapper::ParamConfig.call_rule(rule, self, [value, source_params])
   end
 
   # Unified `association` reference mode: resolve the existing record(s) from the payload section,
@@ -1067,22 +1178,55 @@ module ModelMapper
   # up in the `allowing` scope, and return the record. Missing id → InvalidNilValueError; out-of-scope
   # or unknown id → InvalidValueError. Both keyed on the params path (e.g. "call_origin.id", "tags.2.id").
   def resolve_reference(element, param_config, source_params, index: nil)
+    field_path = reference_field_path(param_config, index, param_config.field_value)
+    record     = lookup_reference(element, param_config, source_params, field_path) { |error| raise error }
+    raise ModelMapper::InvalidNilValueError.new(field_path) if record.nil?
+
+    record
+  end
+
+  # The lookup both reference modes share — a reference and an upsert must accept and refuse the same
+  # identifiers, so the rule lives once: read the identifier (default :id) from the element, then
+  # `find_by` it in the `allowing` scope. Returns the record, or nil when the element names no
+  # identifier (nil or empty) — the caller decides what that means. A refusal is yielded as an
+  # InvalidValueError keyed on `field_path`, and the block's value is returned: the caller raises it
+  # (reference) or records it (upsert). A block rather than raise-and-rescue, so that a caller that
+  # records refusals never swallows an InvalidValueError raised by the `allowing` proc itself.
+  def lookup_reference(element, param_config, source_params, field_path)
     identifier = param_config.field_value
     id         = reference_id(element, identifier)
-    field_path = reference_field_path(param_config, index, identifier)
+    return nil if id.nil? || (id.respond_to?(:empty?) && id.empty?)
 
-    raise ModelMapper::InvalidNilValueError.new(field_path) if id.nil? || (id.respond_to?(:empty?) && id.empty?)
-
-    # A list or a section reaches `find_by` as-is: a silent match on one element, or a database error.
+    # A list or a section reaches `find_by` as-is: a silent match on one of its elements (a reference
+    # to, or an UPDATE of, a record the payload never named), or a database error.
     if id.respond_to?(:each)
-      raise ModelMapper::InvalidValueError.new(field_path,
-                                               details: I18n.t('errors.invalid_value_details.reference_id_not_scalar'))
+      return yield ModelMapper::InvalidValueError.new(
+        field_path, details: I18n.t('errors.invalid_value_details.reference_id_not_scalar')
+      )
     end
 
-    record = allowed_values(param_config, source_params).find_by(identifier => id)
+    scope  = allowed_values(param_config, source_params)
+    record = scope.find_by(identifier => id) if exact_reference_id?(scope, identifier, id)
     return record if record
 
-    raise ModelMapper::InvalidValueError.new(field_path, details: I18n.t('errors.invalid_value_details.invalid_referential'))
+    yield ModelMapper::InvalidValueError.new(field_path, details: I18n.t('errors.invalid_value_details.invalid_referential'))
+  end
+
+  # Whether `id` names its column as sent. `find_by` casts the id to the column type first, so on an
+  # integer key `true`, `"1abc"`, `1.9`, `" 1 "` and `"1.0"` would all look up record 1 — a record the
+  # payload never named, which an upsert would then update. On an integer column the id must therefore
+  # be an Integer or a string of digits (`1`, `"1"`, `"01"`). Any other column type is left to `find_by`:
+  # its cast is the column's own normalization (a uuid read in any case, a string as is), not a guess.
+  # A record (a `default` handing records) names itself; a scope whose model cannot be read (not a
+  # relation or model) is left to `find_by`, as before.
+  def exact_reference_id?(scope, column, id)
+    return true if defined?(ActiveRecord::Base) && id.is_a?(ActiveRecord::Base)
+
+    model = extract_model_class(scope)
+    return true unless model.respond_to?(:type_for_attribute)
+    return true unless model.type_for_attribute(column.to_s).type == :integer
+
+    id.is_a?(Integer) || (id.is_a?(String) && id.match?(/\A\d+\z/))
   end
 
   # The id of a reference element: the `identifier` key of a section (a Hash or an
@@ -1104,29 +1248,11 @@ module ModelMapper
   end
 
   def set_default_value(_value, source_params, param_config)
-    if param_config.default_value.is_a?(Proc)
-      case param_config.default_value.arity
-      when 1
-        instance_exec(source_params, &param_config.default_value)
-      else
-        instance_exec(&param_config.default_value)
-      end
-    else
-      param_config.default_value
-    end
+    ModelMapper::ParamConfig.call_rule(param_config.default_value, self, [source_params])
   end
 
   def allowed_values(param_config, source_params)
-    if param_config.allowing_value.is_a?(Proc)
-      case param_config.allowing_value.arity
-      when 1
-        instance_exec(source_params, &param_config.allowing_value)
-      else
-        instance_exec(&param_config.allowing_value)
-      end
-    else
-      param_config.allowing_value
-    end
+    ModelMapper::ParamConfig.call_rule(param_config.allowing_value, self, [source_params])
   end
 
   # Whether the payload asks for this param to be CLEARED: its key is present carrying a null, or —

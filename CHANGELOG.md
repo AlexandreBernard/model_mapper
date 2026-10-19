@@ -55,9 +55,20 @@ never affected. An `attribute` assigned through a collection's ids writer (`part
 `has_many :parts`, whatever its `type`, including the deprecated `of :referential`) writes the same
 way and is governed the same way; its ids are compared as ActiveRecord's ids writer reads them, and
 an id that names no record is left to the writer's own `RecordNotFound`. The check runs at assignment,
-on the params as `before_assignation` left them. A value other than `true`/`false`, `immediate_write`
+on the params as `before_assignation` left them; a value it will refuse is already read as `nil`, during
+validation, by the params declared after it (their `map_if`, `authorize`, `allowing`, `required` and
+`default` never weigh a value that does not land), as a param that failed validation is. A value other than `true`/`false`, `immediate_write`
 on a param declared `assign false`, or on anything but a reference `association` or an `attribute`
 named `<collection>_ids`, raises `ConfigurationError`. See issue #13.
+
+Every mapped attribute/reference is exposed through a **reader** of the same name, defined at
+declaration time, so a later `allowing`/`map_if`/`with` lambda can read an earlier one by name without
+a manual `attr_reader` (one the class already defines is kept). Readers are order-dependent (an
+earlier reference is readable by attributes declared after it; a later one yields `nil`). A
+`with`-built association gets no reader. A param ending in `_id` that resolves a record — a reference
+`association`, or a scalar legacy `type :referential` — also gets the de-suffixed reader
+(`category_id` ⇒ `category`), since both the id and the record are stored; a `type :referential` list
+(`multiple true`) gets none.
 
 ### Changed
 
@@ -79,10 +90,32 @@ Signed values (`"-5"`, `"+5"`, `-5`) and Float params were rejected before and s
 
 A plain Hash payload is now read indifferently to symbol and string keys, at every level of a `from`
 path, for a sub-mapper's section and for a reference identifier — as an `ActionController::Parameters`
-already was. `{ 'name' => 'x' }` used to be silently ignored by `attribute :name` and now sets it; when
+already was on a `from` path and a sub-mapper's section (a reference section of that class was
+rejected outright in 0.4.1; see Fixed). `{ 'name' => 'x' }` used to be silently ignored by `attribute :name` and now sets it; when
 both forms are present, the key as declared wins — including for a reference identifier, so
 `{ category: { id: nil, 'id' => 1 } }` is now a missing id where it used to find category 1. A list or a scalar where a section is expected still
 raises `TypeError`.
+
+**Breaking — the `save` option is renamed `assign`** (same meaning, same polarity: `assign false` keeps
+a validation-only attribute out of `assign_attributes`). `save`, the option's name in 0.4.1, now
+**raises** `ModelMapper::SaveOptionRenamedError` at class load, because it read as persistence
+(`save_to_model`). Migration: replace `save false` with `assign false`. (Distinct from
+`SaveOptionRemovedError`, which covers the earlier removal of the `map_to_model(save:)` keyword.) The
+`ParamConfig#save?` predicate is renamed `assign?` with it, and has no alias.
+
+Every rule lambda now gets as many of its option's arguments as its signature accepts — positional
+arguments, required or optional — where 0.4.1 picked them from `Proc#arity`, which is negative as soon
+as a signature has an optional argument, so the same lambda was called differently by each option.
+The lists are `(params, target)` for `required`, `(target, params)` for `map_if`, `(params)` for
+`default` and `allowing`, `(value, params)` for the validator of a `type :custom` attribute, and
+`(target, params, value)` for the new `authorize`; the receiver is unchanged (`required` calls the
+lambda, the others `instance_exec` it on the mapper). Calls that raised now work: `->(params, extra = nil)`
+under `default` and `allowing`, `required -> { … }`, `required ->(params = nil) { … }`,
+`map_if ->(target = nil) { … }`, `->(value)` and `-> { … }` as a `type :custom` validator, and a rule
+with an optional keyword (`->(params, k: 1)`). One working call changes: a `default` or `allowing`
+lambda whose parameters are all optional or a splat (`->(params = nil)`, `->(*args)`,
+`proc { |a, b| }`) was called with no argument and is now handed the source params —
+`default ->(p = nil) { p ? x : y }` now returns `x`.
 
 ### Deprecated
 
@@ -98,6 +131,12 @@ once per mapper class and param — because a future release will refuse it inst
 `immediate_write true` or `immediate_write false` to choose now and silence the warning.
 `ModelMapper.reset_explicit_null_warnings!` is superseded by `ModelMapper.reset_deprecation_warnings!`,
 which forgets every kind of deprecation warning; the old name still works and does the same.
+
+The `identifier` option of 0.4.1 is renamed `id_field` (same meaning: the key read inside the `from`
+section and the `find_by` column in reference/upsert mode). `identifier` still works and warns once per
+declaration, at class load; `field`, deprecated since 0.4.1, now points at `id_field`. The 0.4.1 notes
+listed `condition` → the `if:` option: its replacement is `map_if`, which is what its warning has
+always named.
 
 ### Fixed
 
@@ -121,6 +160,42 @@ mapper and which `default_on_invalid` could not catch; `type :custom` handed it 
 `type :enumerated` and `type :referential` compared it or looked it up as-is. A typed value that is
 such a string, or an array holding one, is now refused as an `InvalidFormatError` before its validator
 runs — keyed `<field>.<index>` for an array element — and `default_on_invalid` falls back on it.
+
+An `association` upserting through `with` + `allowing` ignored the id of an element: it always built a
+new record, so an element with an in-scope id created a duplicate. That record is now loaded, linked to
+the parent and updated in place — a `belongs_to` through its writer, a 1-N element by its owner key (and
+the `as:` type column), both in memory, so the map still writes nothing before the save. An element
+without an id is still created, an out-of-scope id is still rejected, and `with` alone always creates.
+A 1-1 upsert whose in-scope id names a record other than the parent's current one replaces it on a
+`belongs_to`, where only the parent's foreign key moves; on a `has_one`, whose replacement would nullify
+the old child at once, it is refused on the id path (`cannot_replace_association`). On an association
+narrowed by a `where` scope (`has_many :spare_parts, -> { where(name: 'spare') }`, or a scoped
+`belongs_to` / `has_one`), a record `allowing` accepts but that scope excludes is refused on its id path
+too (`outside_association_scope`): linked by its key, it would never appear in the association. The
+scope is weighed on the record as stored, with one read; a `:through` scope, which may filter on the join
+table, is not weighed. A `has_many :through` or HABTM upsert updates
+the element in place but does not link it: no join row is created, so a new link goes through the
+join model.
+
+An `association` in reference or upsert mode given an `ActionController::Parameters` section took the
+whole section as the id, so every such reference was rejected; the section is now read like a Hash.
+
+`type :integer` and `type :float` checked their format on the `strip`ped string but cast the raw one.
+`strip` removes a NUL, `to_i`/`to_f` do not skip it, so `"\u000012"` was accepted as `0` and
+`"\u00001.5"` as `0.0`, with no error. Only ASCII whitespace (space, tab, newline, `\v`, `\f`, `\r`) is
+now trimmed, and the trimmed string is both checked and cast: a NUL anywhere, including a trailing one
+(`"12\u0000"`, accepted as `12` before), is an `InvalidFormatError`. `" 12 "` is still `12`.
+A float string that overflows (`"1e400"`, accepted as `Infinity`) is refused too, as a
+`Float::INFINITY` param already was.
+
+A reference id was handed to `find_by`, which casts it to the column type first: on an integer key
+`true`, `"1abc"`, `1.9`, `" 1 "` and `"1.0"` all named record 1, and a scalar `type :referential` given
+a list (`[1, 2]`) took its first element — a record the payload never named, which an upsert would then
+update. On an integer key an id must now be an Integer or a string of digits (`1`, `"1"`, `"01"`), in
+reference and upsert mode and for a legacy `type :referential`; anything else is refused on the id path
+as an `InvalidValueError`, and a scalar `type :referential` refuses a list (a blank element of a
+`multiple` list, the `""` a Rails form's hidden field sends, is still ignored). Any other key type is
+left to `find_by`, whose cast is the column's own normalization (a uuid in any case, a string as is).
 
 ## 0.4.1
 
@@ -161,9 +236,8 @@ end
   (`call_origin=`, `vehicle_attributes=`); nothing is inferred from the name.
 - **Resolution**: `allowing` (reference, validates the id against the scope) and/or `with`
   (build/update via a sub-mapper + `accepts_nested_attributes_for`). Both together = upsert:
-  an element with an id ∈ `allowing` has that record **attached and updated in place** (no
-  duplicate), an element without an id is created, and an out-of-scope id is rejected. `with`
-  alone always creates — update is scoped-only, there is no unscoped update-by-id path.
+  an element with an id is validated against `allowing` then updated; an element without an id
+  is created.
 - **References assign the loaded object** instead of an id (one fewer query, no re-load).
 - **Cardinality is explicit** via `many: true` (no ActiveRecord reflection inference).
 - **All error keys use the params path** the value came from — reference/upsert (`call_origin.id`,
@@ -173,23 +247,10 @@ end
 
 ### Added
 
-- `id_field` option (default `:id`): the key read inside the `from` section **and** the
+- `identifier` option (default `:id`): the key read inside the `from` section **and** the
   `find_by` column in reference/upsert mode.
 - `map_if` block method for the processing condition (named `map_if` because `if` is a Ruby
   keyword and cannot be a bareword DSL method).
-- Every mapped attribute/reference is now exposed through a **reader** of the same name (defined at
-  declaration time), so a later `allowing`/`map_if`/`with` lambda can read an earlier one by name
-  without a manual `attr_reader`. Readers are order-dependent (an earlier reference is readable by
-  attributes declared after it; a later one yields `nil`). A `with`-built association gets no reader.
-
-### Changed / Breaking
-
-- **`save` option renamed to `assign`** (same meaning, same polarity: `assign false` keeps a
-  validation-only attribute out of `assign_attributes`). Unlike the soft deprecations below, the old
-  `save` **raises** `ModelMapper::SaveOptionRenamedError` rather than warning — because `save` now
-  reads as persistence (`save_to_model`) and silently keeping it would be misleading. Migration:
-  replace `save false` with `assign false`. (Distinct from `SaveOptionRemovedError`, which covers the
-  earlier removal of the `map_to_model(save:)` keyword.)
 
 ### Deprecated (still working, emit a warning)
 
@@ -197,7 +258,7 @@ end
 - `type :association` → `association … do with … end`
 - `type :array` + `with` → `association …, many: true do with … end`
 - `type :array, of: :referential` → `association …, many: true do allowing … end`
-- `field` → `id_field`
-- `condition` → `map_if`
+- `field` → `identifier`
+- `condition` → the `if:` option
 
 (`type :array, of: <scalar>` is unchanged.)

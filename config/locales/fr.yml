@@ -10,6 +10,7 @@ fr:
       invalid_referential_in_list: "au moins une des valeurs de la liste n'est pas un référentiel autorisé."
       reference_id_not_scalar: "l'identifiant doit être une valeur unique."
       cannot_replace_association: "l'enregistrement déjà associé ne peut pas être remplacé ici ; mettez-le à jour par son propre id ou remplacez-le côté appelant."
+      outside_association_scope: "l'enregistrement est hors du périmètre de l'association, il ne peut pas lui être rattaché."
       reference_write_refused: "les enregistrements associés ne peuvent pas être modifiés ici, car cela écrirait en base avant la validation de la requête ; modifiez-les côté appelant."
     invalid_nil_value_error: "Le champ %{field} ne peut pas être nul ou blanc."
     unauthorized_field_error: "Le champ %{field} ne peut pas être renseigné par cet appelant."

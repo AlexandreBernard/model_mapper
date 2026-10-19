@@ -215,6 +215,748 @@ class StatusPathMapper
 
 end
 
+# --- upsert linking: belongs_to, and has_many with no inverse ActiveRecord could detect --------------
+
+# belongs_to 1-1 upsert: the owner holds the foreign key.
+class UpsertBtWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  belongs_to :category, optional: true
+  accepts_nested_attributes_for :category
+
+end
+
+class UpsertBtCategoryMapper
+
+  include ModelMapper
+
+  map_model { attribute :name }
+
+end
+
+class UpsertBtMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category_attributes do
+      from :category
+      with UpsertBtCategoryMapper
+      allowing -> { Category.all }
+    end
+  end
+
+end
+
+# A scope and an explicit `foreign_key:` stop ActiveRecord from detecting the inverse `belongs_to`, so
+# nothing links the element through it.
+class UpsertFkWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :parts, -> { order(:id) }, foreign_key: 'widget_id'
+  accepts_nested_attributes_for :parts
+
+end
+
+class UpsertFkPartsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+  end
+
+end
+
+# Polymorphic has_many (`as:`), scoped so no inverse is detected: linking must set the type column too.
+ActiveRecord::Schema.define do
+  create_table :upsert_notes, force: true do |t|
+    t.integer :noteable_id
+    t.string :noteable_type
+    t.string :body
+  end
+end
+
+class UpsertNote < ActiveRecord::Base
+
+  belongs_to :noteable, polymorphic: true, optional: true
+
+end
+
+class UpsertNoteWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :notes, -> { order(:id) }, as: :noteable, class_name: 'UpsertNote'
+  accepts_nested_attributes_for :notes
+
+end
+
+class UpsertNoteBodyMapper
+
+  include ModelMapper
+
+  map_model { attribute :body }
+
+end
+
+class UpsertNotesMapper
+
+  include ModelMapper
+
+  map_model do
+    association :notes_attributes, many: true do
+      from :notes
+      with UpsertNoteBodyMapper
+      allowing -> { UpsertNote.all }
+    end
+  end
+
+end
+
+# Polymorphic belongs_to upsert: the writer sets the owner's type column as well as its foreign key.
+class UpsertPolyNote < ActiveRecord::Base
+
+  self.table_name = 'upsert_notes'
+  belongs_to :noteable, polymorphic: true, optional: true
+  accepts_nested_attributes_for :noteable
+
+end
+
+class UpsertPolyNoteMapper
+
+  include ModelMapper
+
+  map_model do
+    association :noteable_attributes do
+      from :noteable
+      with AssocManualMapper
+      allowing -> { Manual.all }
+    end
+  end
+
+end
+
+# Same no-inverse has_many, onto an element that requires its owner.
+class UpsertRequiredPart < ActiveRecord::Base
+
+  self.table_name = 'parts'
+  belongs_to :widget, class_name: 'UpsertRequiredWidget', optional: false
+
+end
+
+class UpsertRequiredWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :parts, -> { order(:id) }, foreign_key: 'widget_id', class_name: 'UpsertRequiredPart'
+  accepts_nested_attributes_for :parts
+
+end
+
+class UpsertRequiredPartsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { UpsertRequiredPart.all }
+    end
+  end
+
+end
+
+# Counts how often an `allowing` scope is evaluated, to pin that a blank or non-scalar id never reaches it.
+module ScopeCalls
+
+  class << self
+
+    attr_accessor :count
+
+  end
+
+end
+
+class CountingUpsertPartsMapper
+
+  include ModelMapper
+
+  map_model do
+    record_alias :widget
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { ScopeCalls.count += 1; Part.all }
+    end
+  end
+
+end
+
+class CountingRefCategoryMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category do
+      allowing -> { ScopeCalls.count += 1; Category.all }
+    end
+  end
+
+end
+
+# An `allowing` proc that fails on its own: its error is not a refusal of the element.
+class RaisingScopeUpsertMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { raise ModelMapper::InvalidValueError.new('scope', details: 'boom') }
+    end
+  end
+
+end
+
+# Upsert looking its elements up by name instead of id.
+class UpsertPartsByNameMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      id_field :name
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+  end
+
+end
+
+# Legacy `type :referential` on an `_id` attribute: the run stores both `@category_id` and `@category`,
+# so both get a reader.
+class LegacyRefIdMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :category_id do
+      type :referential
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# A plain integer `_id` attribute never stores a record, so it gets no de-suffixed reader.
+class PlainIdMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :category_id do
+      type :integer
+    end
+  end
+
+end
+
+# A list of referentials resolves to a relation, never a single record: no de-suffixed reader.
+class LegacyRefIdListMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :category_id do
+      type :referential
+      multiple true
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# A class that defines its own `category` keeps it.
+class LegacyRefIdOwnReaderMapper
+
+  include ModelMapper
+
+  def category = :own
+
+  map_model do
+    attribute :category_id do
+      type :referential
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# A single reference declared under its `_id` name stores both `@category_id` and `@category`.
+class RefIdNamedMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category_id do
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# A 1-n reference declared under an `_id` name: 0.4.1 shipped its de-suffixed reader, and a fix keeps it.
+class RefIdNamedManyMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category_id, many: true do
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# An `_id` param with an `allowing` list but no record lookup never stores a record.
+class EnumeratedIdMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :category_id do
+      type :enumerated
+      allowing [1, 2]
+    end
+  end
+
+end
+
+# A has_many narrowed by a `where` scope: an in-`allowing` element outside that scope cannot join it.
+class UpsertSpareWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :spare_parts, -> { where(name: 'spare') }, class_name: 'Part', foreign_key: 'widget_id'
+  has_many :worn_parts, -> { where("name LIKE 'worn%'") }, class_name: 'Part', foreign_key: 'widget_id'
+  accepts_nested_attributes_for :spare_parts
+  accepts_nested_attributes_for :worn_parts
+
+end
+
+class UpsertSparePartsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :spare_parts_attributes, many: true do
+      from :spare_parts
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+    association :worn_parts_attributes, many: true do
+      from :worn_parts
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+  end
+
+end
+
+# --- triage of the batch reviews: 1-1 where scopes, through/HABTM upserts, owner key sources ----------
+
+ActiveRecord::Schema.define do
+  create_table :triage_tags, force: true do |t|
+    t.string :name
+  end
+  create_table :triage_taggings, force: true do |t|
+    t.integer :widget_id
+    t.integer :triage_tag_id
+  end
+  create_table :triage_tags_widgets, id: false, force: true do |t|
+    t.integer :widget_id
+    t.integer :triage_tag_id
+  end
+  create_table :triage_sti_owners, force: true do |t|
+    t.string :type
+    t.string :name
+  end
+  create_table :triage_lots, primary_key: %i[shop_id lot_no], force: true do |t|
+    t.integer :shop_id
+    t.integer :lot_no
+    t.string :name
+  end
+  create_table :triage_lot_items, force: true do |t|
+    t.integer :lot_shop_id
+    t.integer :lot_lot_no
+    t.string :name
+  end
+end
+
+class TriageTag < ActiveRecord::Base; end
+
+class TriageTagging < ActiveRecord::Base
+
+  belongs_to :triage_tag
+  belongs_to :widget, class_name: 'TriageThroughWidget', optional: true
+
+end
+
+class TriageTagMapper
+
+  include ModelMapper
+
+  map_model { attribute :name }
+
+end
+
+# has_many :through — the owner key belongs to the join model, not to the tag.
+class TriageThroughWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :triage_taggings, foreign_key: 'widget_id'
+  has_many :triage_tags, through: :triage_taggings
+  accepts_nested_attributes_for :triage_tags
+
+end
+
+class TriageHabtmWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_and_belongs_to_many :triage_tags, join_table: 'triage_tags_widgets', foreign_key: 'widget_id'
+  accepts_nested_attributes_for :triage_tags
+
+end
+
+class TriageTagsUpsertMapper
+
+  include ModelMapper
+
+  map_model do
+    association :triage_tags_attributes, many: true do
+      from :triage_tags
+      with TriageTagMapper
+      allowing -> { TriageTag.all }
+    end
+  end
+
+end
+
+# belongs_to and has_one narrowed by a `where` scope.
+class TriageScopedBtWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  belongs_to :category, -> { where(enabled: true) }, optional: true
+  accepts_nested_attributes_for :category
+
+end
+
+class TriageScopedBtMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category_attributes do
+      from :category
+      with UpsertBtCategoryMapper
+      allowing -> { Category.all }
+    end
+  end
+
+end
+
+class TriageScopedHasOneWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_one :manual, -> { where(title: 'main') }, foreign_key: 'widget_id'
+  accepts_nested_attributes_for :manual
+
+end
+
+class TriageScopedHasOneMapper
+
+  include ModelMapper
+
+  map_model do
+    association :manual_attributes do
+      from :manual
+      with AssocManualMapper
+      allowing -> { Manual.all }
+    end
+  end
+
+end
+
+# A scope that reads its owner.
+class TriageOwnerScopedWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :coded_parts, ->(widget) { where(name: widget.code) }, class_name: 'Part', foreign_key: 'widget_id'
+  accepts_nested_attributes_for :coded_parts
+
+end
+
+class TriageOwnerScopedMapper
+
+  include ModelMapper
+
+  map_model do
+    association :coded_parts_attributes, many: true do
+      from :coded_parts
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+  end
+
+end
+
+# A has_many keyed on a parent column other than its id.
+class TriagePkWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :parts, -> { order(:id) }, foreign_key: 'widget_id', primary_key: 'quantity'
+  accepts_nested_attributes_for :parts
+
+end
+
+class TriagePkMapper
+
+  include ModelMapper
+
+  map_model do
+    association :parts_attributes, many: true do
+      from :parts
+      with AssocPartMapper
+      allowing -> { Part.all }
+    end
+  end
+
+end
+
+# A polymorphic has_many on an STI owner: the type column holds the base class.
+class TriageStiOwner < ActiveRecord::Base
+
+  has_many :notes, -> { order(:id) }, as: :noteable, class_name: 'UpsertNote'
+  accepts_nested_attributes_for :notes
+
+end
+
+class TriageStiChild < TriageStiOwner; end
+
+class TriageStiNotesMapper
+
+  include ModelMapper
+
+  map_model do
+    association :notes_attributes, many: true do
+      from :notes
+      with UpsertNoteBodyMapper
+      allowing -> { UpsertNote.all }
+    end
+  end
+
+end
+
+# A composite-key owner: both foreign key columns come from both primary key columns.
+class TriageLotItem < ActiveRecord::Base; end
+
+class TriageLot < ActiveRecord::Base
+
+  self.primary_key = %i[shop_id lot_no]
+  has_many :items, -> { order(:id) }, class_name: 'TriageLotItem',
+                                       foreign_key: %i[lot_shop_id lot_lot_no], primary_key: %i[shop_id lot_no]
+  accepts_nested_attributes_for :items
+
+end
+
+class TriageLotItemMapper
+
+  include ModelMapper
+
+  map_model { attribute :name }
+
+end
+
+class TriageLotItemsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :items_attributes, many: true do
+      from :items
+      with TriageLotItemMapper
+      allowing -> { TriageLotItem.all }
+    end
+  end
+
+end
+
+# A scoped polymorphic belongs_to: its class comes from the record, not from the reflection.
+class TriageScopedPolyNote < ActiveRecord::Base
+
+  self.table_name = 'upsert_notes'
+  belongs_to :noteable, -> { where.not(title: 'draft') }, polymorphic: true, optional: true
+  accepts_nested_attributes_for :noteable
+
+end
+
+class TriageScopedPolyNoteMapper
+
+  include ModelMapper
+
+  map_model do
+    association :noteable_attributes do
+      from :noteable
+      with AssocManualMapper
+      allowing -> { Manual.all }
+    end
+  end
+
+end
+
+# --- PR #18 review: through scopes, composite keys, blank list elements, normalizing id types ------
+
+ActiveRecord::Schema.define do
+  create_table :pr18_taggings, force: true do |t|
+    t.integer :widget_id
+    t.integer :triage_tag_id
+    t.string :role
+  end
+  create_table :pr18_lots, primary_key: %i[shop_id lot_no], force: true do |t|
+    t.integer :shop_id
+    t.integer :lot_no
+    t.string :name
+    t.integer :widget_id
+  end
+end
+
+class Pr18Tagging < ActiveRecord::Base
+
+  belongs_to :triage_tag
+
+end
+
+# A :through scope that filters on the join table: the target table alone cannot evaluate it.
+class Pr18ThroughWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :pr18_taggings, foreign_key: 'widget_id'
+  has_many :admin_tags, -> { where(pr18_taggings: { role: 'admin' }) }, through: :pr18_taggings, source: :triage_tag
+  accepts_nested_attributes_for :admin_tags
+
+end
+
+class Pr18ThroughMapper
+
+  include ModelMapper
+
+  map_model do
+    association :admin_tags_attributes, many: true do
+      from :admin_tags
+      with TriageTagMapper
+      allowing -> { TriageTag.all }
+    end
+  end
+
+end
+
+# A scoped has_many whose element has a composite primary key.
+class Pr18Lot < ActiveRecord::Base
+
+  self.primary_key = %i[shop_id lot_no]
+
+end
+
+class Pr18LotWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  has_many :named_lots, -> { where(name: 'ok') }, class_name: 'Pr18Lot', foreign_key: 'widget_id'
+  accepts_nested_attributes_for :named_lots
+
+end
+
+class Pr18LotMapper
+
+  include ModelMapper
+
+  map_model { attribute :name }
+
+end
+
+class Pr18LotsMapper
+
+  include ModelMapper
+
+  map_model do
+    association :named_lots_attributes, many: true do
+      from :named_lots
+      id_field :lot_no
+      with Pr18LotMapper
+      allowing -> { Pr18Lot.all }
+    end
+  end
+
+end
+
+# A legacy list referential, as a Rails form sends it (a hidden "" before the checked ids).
+class Pr18ReferentialListMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :category_ids do
+      type :referential
+      multiple true
+      assign false
+      allowing -> { Category.all }
+    end
+  end
+
+end
+
+# A column whose type normalizes what it casts (as PostgreSQL's uuid downcases): an id sent in another
+# form still names its record.
+class Pr18DowncaseString < ActiveModel::Type::String
+
+  def cast_value(value) = super&.downcase
+
+  # Queries go through serialize; PostgreSQL's uuid casts there too.
+  def serialize(value) = cast(value)
+
+end
+
+class Pr18CiCategory < ActiveRecord::Base
+
+  self.table_name = 'categories'
+  attribute :name, Pr18DowncaseString.new
+
+end
+
+class Pr18CiWidget < ActiveRecord::Base
+
+  self.table_name = 'widgets'
+  belongs_to :category, class_name: 'Pr18CiCategory', optional: true
+
+end
+
+class Pr18CiCategoryMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category do
+      id_field :name
+      allowing -> { Pr18CiCategory.all }
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -298,6 +1040,25 @@ class TestAssociation < Minitest::Test
     assert_equal category.id, mapper.widget.category.id
   end
 
+  # The two refusals carry different details: a non-scalar identifier is not "an unknown record".
+  def test_reference_refusals_name_their_reason
+    category = Category.create!(name: 'Listed', enabled: true)
+    listed   = RefCategoryMapper.map_to_model(Widget.new, { category: { id: [category.id] } })
+    unknown  = RefCategoryMapper.map_to_model(Widget.new, { category: { id: 0 } })
+
+    assert_equal I18n.t('errors.invalid_value_details.reference_id_not_scalar'), listed.errors['category.id'].details
+    assert_equal I18n.t('errors.invalid_value_details.invalid_referential'), unknown.errors['category.id'].details
+  end
+
+  # A section that names no identifier is a missing reference, whatever blank it carries.
+  def test_reference_blank_identifier_is_a_nil_error
+    [nil, '', []].each do |blank|
+      mapper = RefCategoryMapper.map_to_model(Widget.new, { category: { id: blank } })
+
+      assert_kind_of ModelMapper::InvalidNilValueError, mapper.errors['category.id'], "id: #{blank.inspect}"
+    end
+  end
+
   # --- 1-1 build ------------------------------------------------------------
 
   def test_build_one
@@ -379,6 +1140,80 @@ class TestAssociation < Minitest::Test
     assert_includes mapper.errors.keys, 'parts.0.id'
   end
 
+  # Same reasons as the reference path, recorded instead of raised.
+  def test_upsert_refusals_name_their_reason
+    part   = Part.create!(name: 'allowed')
+    mapper = UpsertPartsMapper.map_to_model(Widget.new, { parts: [{ id: [part.id] }, { id: 0 }] })
+
+    assert_equal I18n.t('errors.invalid_value_details.reference_id_not_scalar'), mapper.errors['parts.0.id'].details
+    assert_equal I18n.t('errors.invalid_value_details.invalid_referential'), mapper.errors['parts.1.id'].details
+  end
+
+  # Unlike a reference, an upsert element that names no identifier is a CREATE, not a refusal.
+  def test_upsert_blank_identifier_creates
+    ['', []].each do |blank|
+      mapper = UpsertPartsMapper.map_to_model(Widget.new, { parts: [{ id: blank, name: 'fresh' }] })
+
+      assert_predicate mapper, :valid?, "id: #{blank.inspect}"
+      assert_equal %w[fresh], mapper.widget.parts.map(&:name)
+      assert_nil mapper.widget.parts.first.id
+    end
+  end
+
+  # A singular upsert's refusal is keyed without an index.
+  def test_upsert_singular_rejects_out_of_scope_id_on_params_path
+    mapper = UpsertManualMapper.map_to_model(Widget.new, { manual: { id: 0, title: 'x' } })
+
+    refute_predicate mapper, :valid?
+    assert_equal I18n.t('errors.invalid_value_details.invalid_referential'), mapper.errors['manual.id'].details
+    assert_nil mapper.widget.manual
+  end
+
+  # The refusal is keyed on the configured identifier, not on a literal `id`.
+  def test_reference_refusal_is_keyed_on_a_custom_id_field
+    unknown = RefCategoryByNameMapper.map_to_model(Widget.new, { category: { name: 'nope' } })
+    blank   = RefCategoryByNameMapper.map_to_model(Widget.new, { category: { name: nil } })
+
+    assert_equal ['category.name'], unknown.errors.keys
+    assert_equal I18n.t('errors.invalid_value_details.invalid_referential'), unknown.errors['category.name'].details
+    assert_kind_of ModelMapper::InvalidNilValueError, blank.errors['category.name']
+  end
+
+  # A blank or non-scalar identifier is settled before the `allowing` scope is ever evaluated.
+  def test_scope_is_not_evaluated_without_a_scalar_identifier
+    ScopeCalls.count = 0
+    upsert = CountingUpsertPartsMapper.map_to_model(Widget.new,
+                                                    { parts: [{ name: 'a' }, { id: '', name: 'b' }, { id: [1], name: 'c' }] })
+    CountingRefCategoryMapper.map_to_model(Widget.new, { category: { id: [1] } })
+    CountingRefCategoryMapper.map_to_model(Widget.new, { category: { id: nil } })
+
+    assert_equal 0, ScopeCalls.count
+    assert_equal %w[a b], upsert.widget.parts.map(&:name)
+  end
+
+  # The upsert's refusal is keyed on the configured identifier too.
+  def test_upsert_refusal_is_keyed_on_a_custom_id_field
+    mapper = UpsertPartsByNameMapper.map_to_model(Widget.new, { parts: [{ name: 'nope' }, { name: [1] }] })
+
+    assert_equal %w[parts.0.name parts.1.name], mapper.errors.keys.sort
+  end
+
+  # Only an upsert looks an identifier up: a build mapper (no `allowing`) builds whatever the element says.
+  def test_build_ignores_an_identifier
+    mapper = BuildPartsMapper.map_to_model(Widget.new, { parts: [{ id: 999, name: 'a' }] })
+
+    assert_predicate mapper, :valid?
+    assert_equal %w[a], mapper.widget.parts.map(&:name)
+    assert_nil mapper.widget.parts.first.id
+  end
+
+  # An error the `allowing` proc raises itself propagates; it is not recorded as a refusal of the element.
+  def test_upsert_does_not_swallow_an_error_raised_by_the_scope
+    assert_raises(ModelMapper::InvalidValueError) do
+      RaisingScopeUpsertMapper.map_to_model(Widget.new, { parts: [{ id: 1, name: 'x' }] })
+    end
+  end
+
   # An in-scope id UPDATES that record in place (no duplicate) and attaches it to the parent — the
   # headline upsert behavior. The parent's save cascades via accepts_nested_attributes_for.
   def test_upsert_updates_in_scope_element_without_duplicating
@@ -430,6 +1265,167 @@ class TestAssociation < Minitest::Test
     assert_nil new_manual.reload.widget_id              # the differing record was not attached
   end
 
+  # A belongs_to upsert must LINK the record, not only update it: the owner's foreign key is set by the
+  # association writer, in memory, and written by the parent's save.
+  def test_upsert_belongs_to_links_the_record
+    category = Category.create!(name: 'orig')
+    widget   = UpsertBtWidget.create!(name: 'w')
+    mapper   = UpsertBtMapper.map_to_model(widget, { category: { id: category.id, name: 'renamed' } })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal 'renamed', category.reload.name
+    assert_equal category.id, widget.reload.category_id
+  end
+
+  def test_upsert_belongs_to_links_the_record_on_a_new_parent
+    category = Category.create!(name: 'orig')
+    widget   = UpsertBtWidget.new(name: 'w')
+    mapper   = UpsertBtMapper.map_to_model(widget, { category: { id: category.id, name: 'renamed' } })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal 'renamed', category.reload.name
+    assert_equal category.id, widget.reload.category_id
+  end
+
+  # Replacing a belongs_to only moves the owner's foreign key, in memory: no write, no orphan, so a
+  # differing in-scope id is accepted (unlike has_one) and the previous record is left untouched.
+  def test_upsert_belongs_to_replaces_a_different_current_record
+    old_category = Category.create!(name: 'old')
+    category     = Category.create!(name: 'new')
+    widget       = UpsertBtWidget.create!(name: 'w', category: old_category)
+    mapper       = UpsertBtMapper.map_to_model(widget, { category: { id: category.id, name: 'renamed' } })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    assert_equal category.id, widget.reload.category_id
+    assert_equal 'renamed', category.reload.name
+    assert_equal 'old', old_category.reload.name
+  end
+
+  def test_upsert_belongs_to_does_not_persist_during_map
+    old_category = Category.create!(name: 'old')
+    category     = Category.create!(name: 'orig')
+    widget       = UpsertBtWidget.create!(name: 'w', category: old_category)
+    UpsertBtMapper.map_to_model(widget, { category: { id: category.id, name: 'renamed' } })
+
+    assert_equal 'orig', category.reload.name
+    assert_equal old_category.id, UpsertBtWidget.find(widget.id).category_id
+  end
+
+  # With no inverse ActiveRecord could detect, `add_to_target` alone links nothing, and the parent's
+  # save only re-saves an already-persisted element: the owner key is set on the element in memory.
+  def test_upsert_has_many_without_inverse_links_the_record
+    part   = Part.create!(name: 'orig')
+    widget = UpsertFkWidget.create!(name: 'w')
+    mapper = UpsertFkPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal 'renamed', part.reload.name
+    assert_equal widget.id, part.widget_id
+    assert_equal [part.id], widget.parts.reload.pluck(:id)
+  end
+
+  def test_upsert_has_many_without_inverse_links_the_record_on_a_new_parent
+    part   = Part.create!(name: 'orig')
+    widget = UpsertFkWidget.new(name: 'w')
+    mapper = UpsertFkPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal 'renamed', part.reload.name
+    assert_equal widget.id, part.widget_id
+  end
+
+  # The collection writer (`parts=`) would write at once on a persisted parent; the map must not.
+  def test_upsert_has_many_without_inverse_does_not_persist_during_map
+    part   = Part.create!(name: 'orig')
+    widget = UpsertFkWidget.create!(name: 'w')
+    UpsertFkPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    part.reload
+    assert_equal 'orig', part.name
+    assert_nil part.widget_id
+  end
+
+  # The owner key of a polymorphic has_many includes its type column.
+  def test_upsert_polymorphic_has_many_links_id_and_type
+    note   = UpsertNote.create!(body: 'orig')
+    widget = UpsertNoteWidget.create!(name: 'w')
+    mapper = UpsertNotesMapper.map_to_model(widget, { notes: [{ id: note.id, body: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    note.reload
+    assert_equal 'renamed', note.body
+    assert_equal [widget.id, 'UpsertNoteWidget'], [note.noteable_id, note.noteable_type]
+  end
+
+  # The has_one writer would link the child at once (its replace saves it): the map must not use it.
+  def test_upsert_has_one_on_a_parent_without_child_does_not_persist_during_map
+    manual = Manual.create!(title: 'orig')
+    widget = Widget.create!(name: 'w')
+    UpsertManualMapper.map_to_model(widget, { manual: { id: manual.id, title: 'renamed' } })
+
+    manual.reload
+    assert_equal 'orig', manual.title
+    assert_nil manual.widget_id
+  end
+
+  def test_upsert_polymorphic_belongs_to_links_id_and_type
+    manual = Manual.create!(title: 'orig')
+    note   = UpsertPolyNote.create!(body: 'n')
+    mapper = UpsertPolyNoteMapper.map_to_model(note, { noteable: { id: manual.id, title: 'renamed' } })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    note.save!
+    note.reload
+    assert_equal [manual.id, 'Manual'], [note.noteable_id, note.noteable_type]
+    assert_equal 'renamed', manual.reload.title
+  end
+
+  # An in-scope element owned by another parent is moved to this one: the owner key is overwritten.
+  def test_upsert_has_many_without_inverse_moves_an_element_from_another_parent
+    other  = UpsertFkWidget.create!(name: 'other')
+    widget = UpsertFkWidget.create!(name: 'w')
+    part   = Part.create!(name: 'orig', widget_id: other.id)
+    mapper = UpsertFkPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    assert_equal widget.id, part.reload.widget_id
+    assert_equal [part.id], widget.parts.reload.pluck(:id)
+    assert_empty other.parts.reload
+  end
+
+  def test_upsert_polymorphic_has_many_moves_an_element_from_another_type
+    other  = UpsertPolyNote.create!(body: 'other owner')
+    widget = UpsertNoteWidget.create!(name: 'w')
+    note   = UpsertNote.create!(body: 'orig', noteable_id: other.id, noteable_type: 'UpsertPolyNote')
+    mapper = UpsertNotesMapper.map_to_model(widget, { notes: [{ id: note.id, body: 'renamed' }] })
+
+    assert_predicate mapper, :valid?
+    widget.save!
+    note.reload
+    assert_equal [widget.id, 'UpsertNoteWidget'], [note.noteable_id, note.noteable_type]
+  end
+
+  # An unsaved parent has no key to give yet: setting the element's owner key would blank it, and an
+  # element that requires its owner would then fail validation although the save would link it.
+  def test_upsert_has_many_without_inverse_moves_a_required_element_onto_a_new_parent
+    other  = UpsertRequiredWidget.create!(name: 'other')
+    part   = UpsertRequiredPart.create!(name: 'orig', widget: other)
+    widget = UpsertRequiredWidget.new(name: 'w')
+    mapper = UpsertRequiredPartsMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    part.reload
+    assert_equal [widget.id, 'renamed'], [part.widget_id, part.name]
+  end
+
   # --- map_if ---------------------------------------------------------------
 
   def test_map_if_skips_when_false
@@ -478,6 +1474,68 @@ class TestAssociation < Minitest::Test
     assert_empty mapper.widget.parts
   end
 
+  # A legacy `type :referential` `_id` attribute exposes the de-suffixed record reader too, as the
+  # README promises for the `@category_id` + `@category` pair the run stores.
+  def test_legacy_referential_id_exposes_the_de_suffixed_reader
+    category = Category.create!(name: 'Legacy', enabled: true)
+    mapper   = LegacyRefIdMapper.map_to_model(Widget.new, { category_id: category.id })
+
+    assert_predicate mapper, :valid?
+    assert_equal category.id, mapper.category_id
+    assert_equal category, mapper.category
+  end
+
+  # Declared at definition time like the other readers: present (nil) when the value is absent. A fresh
+  # class, so no earlier mapping can have defined the reader first.
+  def test_legacy_referential_id_reader_exists_when_absent
+    klass = Class.new do
+      include ModelMapper
+
+      map_model do
+        attribute :category_id do
+          type :referential
+          allowing -> { Category.enabled }
+        end
+      end
+    end
+
+    assert klass.method_defined?(:category)
+    assert_nil klass.map_to_model(Widget.new, {}).category
+  end
+
+  def test_reference_named_with_id_exposes_the_de_suffixed_reader
+    category = Category.create!(name: 'RefId', enabled: true)
+    mapper   = RefIdNamedMapper.map_to_model(Widget.new, { category_id: { id: category.id } })
+
+    assert_predicate mapper, :valid?
+    assert_equal category.id, mapper.category_id
+    assert_equal category, mapper.category
+    assert_respond_to RefIdNamedMapper.map_to_model(Widget.new, {}), :category
+  end
+
+  def test_reference_many_named_with_id_keeps_the_de_suffixed_reader
+    assert RefIdNamedManyMapper.method_defined?(:category)
+  end
+
+  def test_enumerated_id_attribute_gets_no_de_suffixed_reader
+    refute EnumeratedIdMapper.method_defined?(:category)
+  end
+
+  def test_plain_id_attribute_gets_no_de_suffixed_reader
+    refute PlainIdMapper.method_defined?(:category)
+  end
+
+  def test_referential_id_list_gets_no_de_suffixed_reader
+    refute LegacyRefIdListMapper.method_defined?(:category)
+  end
+
+  def test_legacy_referential_id_keeps_a_reader_the_class_defines
+    category = Category.create!(name: 'Own', enabled: true)
+    mapper   = LegacyRefIdOwnReaderMapper.map_to_model(Widget.new, { category_id: category.id })
+
+    assert_equal :own, mapper.category
+  end
+
   # --- record validations keyed on the params path --------------------------
 
   def test_record_validation_uses_params_path
@@ -499,6 +1557,42 @@ class TestAssociation < Minitest::Test
     end
   end
 
+  def test_field_warning_points_at_id_field
+    assert_output(nil, /`field` is deprecated; use `id_field` instead \(attribute `category`\)/) do
+      Class.new do
+        include ModelMapper
+        map_model { attribute(:category) { field :name } }
+      end
+    end
+  end
+
+  # `identifier` shipped in 0.4.1 and was renamed `id_field`: a 0.4.1 mapper must still load, warn
+  # once at class load, and look the reference up by the column it names.
+  def test_identifier_is_deprecated_and_still_sets_the_lookup_column
+    mapper_class = nil
+    assert_output(nil, /\A\[ModelMapper\] `identifier` is deprecated; use `id_field` instead \(attribute `category`\)\.\n\z/) do
+      mapper_class = Class.new do
+        include ModelMapper
+        map_model do
+          association :category do
+            identifier :name
+            allowing -> { Category.all }
+          end
+        end
+      end
+    end
+    category = Category.create!(name: 'ByIdentifier', enabled: true)
+
+    mapper = nil
+    assert_silent do
+      mapper = mapper_class.map_to_model(Widget.new, { category: { name: 'ByIdentifier' } })
+      mapper_class.map_to_model(Widget.new, { category: { name: 'ByIdentifier' } })
+    end
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    assert_equal category.id, mapper.record.category.id
+  end
+
   def test_condition_is_deprecated
     assert_output(nil, /`condition` is deprecated/) do
       Class.new do
@@ -508,4 +1602,340 @@ class TestAssociation < Minitest::Test
     end
   end
 
+
+  # An element `allowing` accepts but the association's own `where` scope excludes would be linked by
+  # its key yet never appear in the association: it is refused on its id, and nothing is linked.
+  def test_upsert_refuses_an_element_outside_the_association_where_scope
+    widget = UpsertSpareWidget.create!(name: 'w')
+    part   = Part.create!(name: 'regular')
+    mapper = UpsertSparePartsMapper.map_to_model(widget, { spare_parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_equal ['spare_parts.0.id'], mapper.errors.keys
+    assert_equal I18n.t('errors.invalid_value_details.outside_association_scope'),
+                 mapper.errors['spare_parts.0.id'].details
+    assert_nil part.reload.widget_id
+    assert_equal 'regular', part.name
+  end
+
+  # The scope is weighed on the record as stored, not as the payload would rewrite it.
+  def test_upsert_refuses_an_out_of_scope_element_even_when_the_payload_would_bring_it_in
+    widget = UpsertSpareWidget.create!(name: 'w')
+    part   = Part.create!(name: 'regular')
+    mapper = UpsertSparePartsMapper.map_to_model(widget, { spare_parts: [{ id: part.id, name: 'spare' }] })
+
+    assert_equal ['spare_parts.0.id'], mapper.errors.keys
+  end
+
+  def test_upsert_accepts_an_element_inside_the_association_where_scope
+    widget = UpsertSpareWidget.create!(name: 'w')
+    part   = Part.create!(name: 'spare')
+    mapper = UpsertSparePartsMapper.map_to_model(widget, { spare_parts: [{ id: part.id }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    assert_equal [part.id], widget.spare_parts.reload.pluck(:id)
+  end
+
+  # A scope written as SQL is weighed too, not only a hash condition.
+  def test_upsert_refuses_an_element_outside_a_sql_where_scope
+    widget = UpsertSpareWidget.create!(name: 'w')
+    worn   = Part.create!(name: 'worn out')
+    fresh  = Part.create!(name: 'fresh')
+    mapper = UpsertSparePartsMapper.map_to_model(widget, { worn_parts: [{ id: worn.id }, { id: fresh.id }] })
+
+    assert_equal ['worn_parts.1.id'], mapper.errors.keys
+  end
+
+  # The scope check reads, it never writes: a refused element leaves the database as it was.
+  def test_upsert_scope_refusal_writes_nothing_during_the_map
+    widget = UpsertSpareWidget.create!(name: 'w')
+    part   = Part.create!(name: 'regular')
+    queries = []
+    callback = ->(*, payload) { queries << payload[:sql] unless payload[:name] == 'SCHEMA' }
+    ActiveSupport::Notifications.subscribed(callback, 'sql.active_record') do
+      UpsertSparePartsMapper.map_to_model(widget, { spare_parts: [{ id: part.id }] })
+    end
+
+    assert(queries.none? { |sql| sql =~ /\A\s*(INSERT|UPDATE|DELETE)/i }, queries.inspect)
+  end
+
+  # --- triage of the batch reviews -------------------------------------------------------------------
+
+  # The owner key of a :through or HABTM collection lives on the join row: the upsert must not write it
+  # onto the element (it raised MissingAttributeError / UnknownPrimaryKey), and the map stays write-free.
+  def test_upsert_through_collection_maps_without_raising
+    tag    = TriageTag.create!(name: 'orig')
+    widget = TriageThroughWidget.create!(name: 'w')
+    mapper = TriageTagsUpsertMapper.map_to_model(widget, { triage_tags: [{ id: tag.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    assert_equal 'orig', tag.reload.name
+  end
+
+  def test_upsert_habtm_collection_maps_without_raising
+    tag    = TriageTag.create!(name: 'orig')
+    widget = TriageHabtmWidget.create!(name: 'w')
+    mapper = TriageTagsUpsertMapper.map_to_model(widget, { triage_tags: [{ id: tag.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    assert_equal 'orig', tag.reload.name
+  end
+
+  # The where-scope refusal holds for a 1-1 association too (owner's decision, batch triage).
+  def test_upsert_refuses_a_belongs_to_record_outside_its_where_scope
+    off    = Category.create!(name: 'off', enabled: false)
+    widget = TriageScopedBtWidget.create!(name: 'w')
+    mapper = TriageScopedBtMapper.map_to_model(widget, { category: { id: off.id } })
+
+    assert_equal ['category.id'], mapper.errors.keys
+    assert_equal I18n.t('errors.invalid_value_details.outside_association_scope'), mapper.errors['category.id'].details
+    assert_nil widget.category_id
+  end
+
+  def test_upsert_accepts_a_belongs_to_record_inside_its_where_scope
+    on     = Category.create!(name: 'on', enabled: true)
+    widget = TriageScopedBtWidget.create!(name: 'w')
+    mapper = TriageScopedBtMapper.map_to_model(widget, { category: { id: on.id } })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    assert_equal on.id, widget.reload.category_id
+  end
+
+  def test_upsert_refuses_a_has_one_record_outside_its_where_scope
+    other  = Manual.create!(title: 'other')
+    widget = TriageScopedHasOneWidget.create!(name: 'w')
+    mapper = TriageScopedHasOneMapper.map_to_model(widget, { manual: { id: other.id, title: 'x' } })
+
+    assert_equal ['manual.id'], mapper.errors.keys
+    assert_nil other.reload.widget_id
+    assert_equal 'other', other.title
+  end
+
+  def test_upsert_accepts_a_has_one_record_inside_its_where_scope
+    main   = Manual.create!(title: 'main')
+    widget = TriageScopedHasOneWidget.create!(name: 'w')
+    mapper = TriageScopedHasOneMapper.map_to_model(widget, { manual: { id: main.id } })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+  end
+
+  # A scope that reads its owner is evaluated for THIS owner.
+  def test_upsert_weighs_an_owner_dependent_scope_on_the_parent
+    widget = TriageOwnerScopedWidget.create!(name: 'w', code: 'abc')
+    inside = Part.create!(name: 'abc')
+    outside = Part.create!(name: 'zzz')
+    mapper = TriageOwnerScopedMapper.map_to_model(widget, { coded_parts: [{ id: inside.id }, { id: outside.id }] })
+
+    assert_equal ['coded_parts.1.id'], mapper.errors.keys
+  end
+
+  # The owner key comes from the column the association names, not the parent's id.
+  def test_upsert_owner_key_reads_the_association_primary_key
+    widget = TriagePkWidget.create!(name: 'w', quantity: 77)
+    part   = Part.create!(name: 'orig')
+    mapper = TriagePkMapper.map_to_model(widget, { parts: [{ id: part.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    widget.save!
+    assert_equal 77, part.reload.widget_id
+  end
+
+  def test_upsert_polymorphic_owner_key_names_the_sti_base_class
+    owner  = TriageStiChild.create!(name: 'child')
+    note   = UpsertNote.create!(body: 'orig')
+    mapper = TriageStiNotesMapper.map_to_model(owner, { notes: [{ id: note.id, body: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    owner.save!
+    assert_equal [owner.id, 'TriageStiOwner'], note.reload.values_at(:noteable_id, :noteable_type)
+  end
+
+  def test_upsert_owner_key_sets_every_column_of_a_composite_key
+    lot    = TriageLot.create!(shop_id: 3, lot_no: 9, name: 'lot')
+    item   = TriageLotItem.create!(name: 'orig')
+    mapper = TriageLotItemsMapper.map_to_model(lot, { items: [{ id: item.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    lot.save!
+    assert_equal [3, 9], item.reload.values_at(:lot_shop_id, :lot_lot_no)
+  end
+
+  # Accepted elements are staged in memory too: an in-scope upsert on a persisted parent and an upsert
+  # onto a new parent issue no INSERT/UPDATE/DELETE before the save.
+  def test_upsert_staging_writes_nothing_during_the_map
+    widget = UpsertSpareWidget.create!(name: 'w')
+    spare  = Part.create!(name: 'spare')
+    loose  = Part.create!(name: 'loose')
+    queries = []
+    callback = ->(*, payload) { queries << payload[:sql] unless payload[:name] == 'SCHEMA' }
+    ActiveSupport::Notifications.subscribed(callback, 'sql.active_record') do
+      UpsertSparePartsMapper.map_to_model(widget, { spare_parts: [{ id: spare.id, name: 'spare' }] })
+      UpsertFkPartsMapper.map_to_model(UpsertFkWidget.new(name: 'new'), { parts: [{ id: loose.id, name: 'x' }] })
+    end
+
+    assert(queries.none? { |sql| sql =~ /\A\s*(INSERT|UPDATE|DELETE)/i }, queries.inspect)
+  end
+  # --- an id must name its record exactly, not after find_by's cast (owner's decision, batch triage) --
+
+  COERCED_IDS = [true, '%<id>dabc', 1.9, ' %<id>d ', '%<id>d.0'].freeze
+
+  def coerced(template, id)
+    template.is_a?(String) ? format(template, id:) : template
+  end
+
+  # `true` and `1.9` cast to id 1, so the record they would wrongly name is id 1.
+  def category_one
+    Category.find_by(id: 1) || Category.create!(id: 1, name: 'one')
+  end
+
+  def test_reference_refuses_an_id_that_only_matches_once_cast
+    category = category_one
+    COERCED_IDS.each do |template|
+      payload = coerced(template, category.id)
+      mapper  = RefCategoryMapper.map_to_model(Widget.new, { category: { id: payload } })
+
+      assert_equal ['category.id'], mapper.errors.keys, "id #{payload.inspect} was accepted"
+      assert_nil mapper.record.category_id
+    end
+  end
+
+  def test_reference_still_accepts_an_integer_or_its_string
+    category = Category.create!(name: 'one')
+
+    assert_equal category, RefCategoryMapper.map_to_model(Widget.new, { category: { id: category.id } }).record.category
+    assert_equal category, RefCategoryMapper.map_to_model(Widget.new, { category: { id: category.id.to_s } }).record.category
+  end
+
+  def test_reference_by_a_string_column_compares_the_string_as_sent
+    category = Category.create!(name: 'coercion-by-name')
+    mapper   = RefCategoryByNameMapper.map_to_model(Widget.new, { category: { name: 'coercion-by-name' } })
+
+    assert_equal category, mapper.record.category
+  end
+
+  def test_reference_list_refuses_an_element_that_only_matches_once_cast
+    part   = Part.create!(name: 'p')
+    mapper = RefPartsMapper.map_to_model(Widget.new, { parts: [{ id: part.id }, { id: "#{part.id}abc" }] })
+
+    assert_equal ['parts.1.id'], mapper.errors.keys
+  end
+
+  # The case that made it urgent: a coerced id replaced a belongs_to and renamed a record it never named.
+  def test_upsert_refuses_a_coerced_id_instead_of_relinking_the_parent
+    one    = category_one
+    name   = one.name
+    two    = Category.create!(name: 'two')
+    widget = UpsertBtWidget.create!(name: 'w', category_id: two.id)
+    [true, '1abc', 1.9].each do |payload|
+      mapper = UpsertBtMapper.map_to_model(widget, { category: { id: payload, name: 'renamed' } })
+
+      assert_equal ['category.id'], mapper.errors.keys, "id #{payload.inspect} was accepted"
+    end
+    assert_equal two.id, widget.reload.category_id
+    assert_equal name, one.reload.name
+  end
+
+  def test_legacy_referential_refuses_a_list_and_a_coerced_id
+    category = Category.create!(name: 'one', enabled: true)
+    [[category.id, category.id + 1], "#{category.id}x", true].each do |payload|
+      mapper = LegacyRefIdMapper.map_to_model(Widget.new, { category_id: payload })
+
+      assert_equal ['category_id'], mapper.errors.keys, "category_id #{payload.inspect} was accepted"
+    end
+    assert_equal category.id, LegacyRefIdMapper.map_to_model(Widget.new, { category_id: category.id.to_s }).record.category_id
+  end
+  def test_legacy_referential_list_refuses_a_coerced_id_after_a_valid_one
+    category = Category.create!(name: 'listed', enabled: true)
+    [[category.id, "#{category.id}abc"], [category.id, true]].each do |payload|
+      mapper = LegacyRefIdListMapper.map_to_model(Widget.new, { category_id: payload })
+
+      assert_equal ['category_id'], mapper.errors.keys, "category_id #{payload.inspect} was accepted"
+    end
+  end
+
+  # An `allowing` scope that is not an ActiveRecord relation has no column type to cast against: the id
+  # is left to its own `find_by`, as sent.
+  class DuckScope
+
+    def initialize(record) = @record = record
+
+    def find_by(conditions) = (@record if conditions.values.first == 'duck-id')
+
+  end
+
+  def test_reference_leaves_an_id_to_a_scope_without_column_types
+    category = Category.create!(name: 'duck')
+    klass = Class.new do
+      include ModelMapper
+
+      map_model { association(:category) { allowing -> { DuckScope.new(Category.find_by(name: 'duck')) } } }
+    end
+    mapper = klass.map_to_model(Widget.new, { category: { id: 'duck-id' } })
+
+    assert_empty mapper.errors
+    assert_equal category, mapper.record.category
+  end
+  # ActiveRecord cannot compute the class of a polymorphic belongs_to: the scope is weighed on the class
+  # of the record found, instead of raising out of the non-raising map.
+  def test_upsert_weighs_a_scoped_polymorphic_belongs_to_on_the_record_class
+    note  = TriageScopedPolyNote.create!(body: 'n')
+    kept  = Manual.create!(title: 'kept')
+    draft = Manual.create!(title: 'draft')
+
+    accepted = TriageScopedPolyNoteMapper.map_to_model(note, { noteable: { id: kept.id, title: 'kept' } })
+    assert_predicate accepted, :valid?, accepted.errors.inspect
+
+    refused = TriageScopedPolyNoteMapper.map_to_model(TriageScopedPolyNote.create!(body: 'm'),
+                                                     { noteable: { id: draft.id, title: 'x' } })
+    assert_equal ['noteable.id'], refused.errors.keys
+  end
+  # --- PR #18 review ---------------------------------------------------------------------------------
+
+  # A :through upsert never links its element, and its scope may filter on the join table, which the
+  # target table alone cannot evaluate: the scope check is skipped instead of raising StatementInvalid.
+  def test_upsert_through_scope_on_the_join_table_maps_without_raising
+    tag    = TriageTag.create!(name: 'orig')
+    widget = Pr18ThroughWidget.create!(name: 'w')
+    mapper = Pr18ThroughMapper.map_to_model(widget, { admin_tags: [{ id: tag.id, name: 'renamed' }] })
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+  end
+
+  def test_upsert_scope_check_handles_a_composite_primary_key
+    widget = Pr18LotWidget.create!(name: 'w')
+    Pr18Lot.create!(shop_id: 1, lot_no: 7, name: 'ok')
+    Pr18Lot.create!(shop_id: 1, lot_no: 8, name: 'ko')
+
+    accepted = Pr18LotsMapper.map_to_model(widget, { named_lots: [{ lot_no: 7, name: 'ok' }] })
+    assert_predicate accepted, :valid?, accepted.errors.inspect
+
+    refused = Pr18LotsMapper.map_to_model(widget, { named_lots: [{ lot_no: 8, name: 'ok' }] })
+    assert_equal ['named_lots.0.lot_no'], refused.errors.keys
+  end
+
+  def test_legacy_referential_list_ignores_a_blank_element
+    category = Category.create!(name: 'checked')
+    mapper   = Pr18ReferentialListMapper.map_to_model(Widget.new, { category_ids: ['', category.id.to_s] })
+
+    assert_empty mapper.errors
+    assert_equal [category], mapper.category_ids.to_a
+  end
+
+  def test_reference_on_a_normalizing_column_accepts_the_id_in_another_form
+    category = Pr18CiCategory.create!(name: 'mixed-case-pr18')
+    mapper   = Pr18CiCategoryMapper.map_to_model(Pr18CiWidget.new, { category: { name: 'MIXED-CASE-PR18' } })
+
+    assert_empty mapper.errors
+    assert_equal category.id, mapper.record.category_id
+  end
+
+  # On an integer key, a string of digits names its record, leading zeros included.
+  def test_reference_accepts_digits_with_a_leading_zero
+    category = Category.create!(name: 'zero')
+    mapper   = RefCategoryMapper.map_to_model(Widget.new, { category: { id: "0#{category.id}" } })
+
+    assert_empty mapper.errors
+    assert_equal category, mapper.record.category
+  end
 end

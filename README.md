@@ -142,12 +142,31 @@ end
 > is no unscoped update path. The attach is in-memory; persistence is deferred to the parent's own save,
 > which cascades to the child through `accepts_nested_attributes_for` (declare it on the parent).
 >
+> The attached record is also **linked**: a `belongs_to` gets the parent's foreign key, a 1‑N element
+> gets the parent's key (and the `as:` type column) — set in memory, written by the parent's save,
+> whether or not ActiveRecord detects an inverse for the association. A `has_many :through` or HABTM
+> element is updated in place but **not** linked: its link is a join row, which the upsert does not
+> create — add it through the join model.
+>
+> *Association scope:* an association narrowed by a `where` scope (`has_many :spare_parts,
+> -> { where(name: 'spare') }`, or a scoped `belongs_to` / `has_one`) only ever holds records that
+> match it. A record `allowing` accepts but that scope excludes is **refused** on its id path (e.g.
+> `spare_parts.0.id`) rather than linked outside the association. The scope is weighed on the record
+> as stored, with one read, before the payload is mapped onto it.
+>
+> *Ids are taken as sent:* on an integer key an id must be an Integer or a string of digits — `1`,
+> `"1"` and `"01"` are, while `true`, `"1abc"`, `1.9`, `" 1 "` or `"1.0"`, which `find_by` would read as
+> record 1, are refused on the id path. Any other key type (a uuid, a string) is left to `find_by` and
+> its column's own cast. This holds in reference and upsert mode and for a legacy `type :referential`;
+> a blank element of a `multiple` list (`""`) is ignored, as `where` ignores it.
+>
 > *1-1 replace:* mapping never writes to the DB (associations are staged in memory before overall
 > validity is known), so a 1-1 upsert cannot disassociate a `has_one`'s current child (that needs an
 > immediate, un-rollback-able write). It therefore **rejects** an in-scope id that differs from the
 > parent's current child with a params-path error (e.g. `manual.id`) instead of silently orphaning the
 > old child on save. Updating the same child, or attaching when the parent has none, works as usual;
-> perform a genuine *replacement* in the caller. 1-N is unaffected.
+> perform a genuine `has_one` *replacement* in the caller. A `belongs_to` is replaced as usual — only
+> the parent's foreign key moves, the previous record is left untouched. 1-N is unaffected.
 
 - **References assign the loaded object(s)**, not an id — the record fetched for validation is the
   one assigned (one fewer query, no re-load). A bare id (`{ call_origin: 5 }`) is accepted as well as
@@ -197,6 +216,15 @@ end
   refuses by default; see
   [Deprecations](#a-reference-written-during-the-map). Replace such children in the caller, after the
   map succeeded, when the write must wait for validation.
+
+  Under `immediate_write false`, a value that would be refused if it reached the writer as sent reads
+  as `nil` to the params declared after it (their `map_if`, `authorize`, `allowing`, `required`,
+  `default`), as a param that failed validation does — a rule that trips over that `nil` is reported
+  as an error on its own param — so nothing they decide rests on it; `before_assignation` and
+  everything after the loop read it as usual. Two consequences are accepted: the forecast is made
+  before `before_assignation`, so a value the hook then puts back (nothing refused in the end) was
+  still `nil` to those params; and while a value is withheld, any exception a later rule raises — even
+  one unrelated to it — is reported as an error on that rule's param instead of propagating.
 - **Error reporting differs by mode for 1‑N** (worth knowing): a 1‑N **reference** fails fast — the
   first out-of-scope element raises and any already-resolved elements are discarded, so only one
   `name.N.id` is reported. A 1‑N **upsert** collects every out-of-scope id and reports them all. Both
@@ -278,6 +306,7 @@ to `association` (`nullable:` and `immediate_write:` are also accepted as keywor
 | `of` | Symbol | `nil` | Element type for a `type :array` of **scalars** |
 | `multiple` | Bool | `false` | `:enumerated` only — accept an array of values |
 | `field` | Symbol | `:id` | **Deprecated** — use `id_field` |
+| `identifier` | Symbol | `:id` | **Deprecated** (its 0.4.1 name) — use `id_field` |
 | `condition` | Proc | `nil` | **Deprecated** — use `map_if` |
 
 ### `required`
@@ -289,6 +318,10 @@ required true
 required ->(params) { params[:code].nil? }
 required ->(params, target) { target.new_record? }
 ```
+
+The lambda is called (not `instance_exec`ed: `self` is where it was written) with as many of
+`(params, target)` as its signature accepts — an optional argument counts, so
+`->(params, target = nil)` gets both.
 
 ### `nullable` — clearing a value
 
@@ -345,6 +378,11 @@ default 'active'
 default -> { Time.current }
 default ->(params) { params[:fallback_name] }
 ```
+
+A `default` or `allowing` lambda is `instance_exec`ed on the mapper and handed the source params when
+its signature accepts an argument — required or optional: `->(params = nil)` gets them too. (The
+`allowing` of a `type :custom` attribute is a validator: its list is `(value, source_params)`, see
+[`:custom`](#custom).)
 
 ### `map_if`
 
@@ -493,7 +531,7 @@ end
 
 ### `:custom`
 
-Passes the value through a lambda for arbitrary validation/transformation. The lambda receives `(value, source_params)` and is executed via `instance_exec`.
+Passes the value through a lambda for arbitrary validation/transformation. The lambda is executed via `instance_exec` on the mapper and receives as many of `(value, source_params)` as its signature accepts: `->(value)` gets the value only, `->(value, params)` both.
 
 ```ruby
 attribute :code do
@@ -791,6 +829,9 @@ removed in a later release. See `CHANGELOG.md`.
 | `field :col` | `id_field :col` |
 | `condition -> { … }` | `map_if -> { … }` |
 | `at :a, :b` | `from :a, :b` |
+
+`identifier :col`, the name 0.4.1 gave `id_field`, is deprecated since the release after it: it
+still works and warns at each declaration. Replace it with `id_field :col`.
 
 `type :array` with a scalar `of` (`:string`, `:integer`, `:float`, `:date`, `:boolean`,
 `:enumerated`, `:custom`, `:any`) is **not** deprecated.

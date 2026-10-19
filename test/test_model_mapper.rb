@@ -1045,6 +1045,49 @@ class TestModelMapper < Minitest::Test
     end
   end
 
+  # `strip` removes a NUL but `to_f` does not skip one: checked on the stripped string and cast from the raw
+  # one, "\u00001.5" passed and became 0.0. A NUL is not padding, at either end.
+  def test_float_rejects_a_nul_anywhere
+    ["\u00001.5", "1.5\u0000", "1.\u00005", " \u00001.5"].each do |input|
+      widget  = Widget.new
+      service = FloatService.new(widget, { price: input })
+      error   = assert_raises(ModelMapper::ValidationError, input.inspect) { service.call }
+      assert_kind_of ModelMapper::InvalidFormatError, error.first_error, input.inspect
+      assert_equal :float, error.first_error.expected_format, input.inspect
+      assert_nil widget.price, input.inspect
+    end
+  end
+
+  # Padding is exactly what `to_f` skips: Ruby's `\s`, at either end. A Unicode space is not padding.
+  def test_float_accepts_ascii_whitespace_padding_only
+    inputs = ["\t1.5", "1.5\t", "\n1.5\n", "\v1.5\v", "\f1.5\f", "\r1.5\r", " \t\n1.5\r\f\v "]
+    actual = inputs.map do |input|
+      widget = Widget.new
+      FloatService.new(widget, { price: input }).call
+      widget.price
+    end
+    assert_equal [1.5] * inputs.size, actual
+
+    # Non-breaking, next-line, em and ideographic spaces.
+    [0xa0, 0x85, 0x2003, 0x3000].each do |code_point|
+      input = "#{code_point.chr(Encoding::UTF_8)}1.5"
+      error = assert_raises(ModelMapper::ValidationError, input.inspect) { FloatService.new(Widget.new, { price: input }).call }
+      assert_kind_of ModelMapper::InvalidFormatError, error.first_error, input.inspect
+    end
+  end
+
+  # The format holds, but `to_f` overflows: these were stored as Infinity and -Infinity, a value the
+  # Float::INFINITY path refuses.
+  def test_float_rejects_a_string_that_overflows
+    ['1e400', '-1e400', '9' * 400].each do |input|
+      widget  = Widget.new
+      service = FloatService.new(widget, { price: input })
+      error   = assert_raises(ModelMapper::ValidationError, input[0, 10]) { service.call }
+      assert_equal :float, error.first_error.expected_format, input[0, 10]
+      assert_nil widget.price, input[0, 10]
+    end
+  end
+
   # A real, finite Numeric skips the string format: a Rational renders as "1/2", which FLOAT_FORMAT rejects.
   def test_float_accepts_real_finite_numerics
     inputs   = [Rational(1, 2), Rational(4, 1), BigDecimal('1.5'), BigDecimal('-2')]
@@ -1127,6 +1170,37 @@ class TestModelMapper < Minitest::Test
     ["12\nabc", "abc\n12"].each do |input|
       service = IntegerService.new(Widget.new, { quantity: input })
       error   = assert_raises(ModelMapper::ValidationError, input.inspect) { service.call }
+      assert_kind_of ModelMapper::InvalidFormatError, error.first_error, input.inspect
+    end
+  end
+
+  # `strip` removes a NUL but `to_i` does not skip one: checked on the stripped string and cast from the raw
+  # one, "\u000012" passed and became 0. A NUL is not padding, at either end.
+  def test_integer_rejects_a_nul_anywhere
+    ["\u000012", "12\u0000", "1\u00002", "\n\u000012"].each do |input|
+      widget  = Widget.new
+      service = IntegerService.new(widget, { quantity: input })
+      error   = assert_raises(ModelMapper::ValidationError, input.inspect) { service.call }
+      assert_kind_of ModelMapper::InvalidFormatError, error.first_error, input.inspect
+      assert_equal :integer, error.first_error.expected_format, input.inspect
+      assert_nil widget.quantity, input.inspect
+    end
+  end
+
+  # Padding is exactly what `to_i` skips: Ruby's `\s`, at either end. A Unicode space is not padding.
+  def test_integer_accepts_ascii_whitespace_padding_only
+    inputs = ["\t12", "12\t", "\v12\v", "\f12\f", "\r12\r", " \t\n12\r\f\v "]
+    actual = inputs.map do |input|
+      widget = Widget.new
+      IntegerService.new(widget, { quantity: input }).call
+      widget.quantity
+    end
+    assert_equal [12] * inputs.size, actual
+
+    # Non-breaking, next-line, em and ideographic spaces.
+    [0xa0, 0x85, 0x2003, 0x3000].each do |code_point|
+      input = "#{code_point.chr(Encoding::UTF_8)}12"
+      error = assert_raises(ModelMapper::ValidationError, input.inspect) { IntegerService.new(Widget.new, { quantity: input }).call }
       assert_kind_of ModelMapper::InvalidFormatError, error.first_error, input.inspect
     end
   end
@@ -1268,6 +1342,13 @@ class TestModelMapper < Minitest::Test
     widget = Widget.new
     service = DefaultOnInvalidFloatService.new(widget, { price: "12\xFF".dup.force_encoding('UTF-8') })
     service.call
+    assert_equal 7.0, widget.price
+  end
+
+  # Before the fix "\u00001.5" cast to 0.0 with no error, so the default never applied.
+  def test_default_on_invalid_falls_back_on_a_leading_nul
+    widget = Widget.new
+    DefaultOnInvalidFloatService.new(widget, { price: "\u00001.5" }).call
     assert_equal 7.0, widget.price
   end
 
@@ -1939,6 +2020,17 @@ class TestModelMapper < Minitest::Test
 
     refute service.valid?
     assert_includes service.errors.keys, 'numbers.1'
+  end
+
+  # An element goes through the scalar validator: before the fix ["1", "\u00002"] became [1, 0].
+  def test_array_of_integer_refuses_an_element_with_a_nul
+    widget  = Widget.new
+    service = ArrayWidgetMapper.new(widget, { numbers: ["1", "\u00002"] })
+    service.map_to_model
+
+    refute service.valid?
+    assert_includes service.errors.keys, 'numbers.1'
+    assert_nil widget.numbers
   end
 
   def test_array_of_referential_resolves_each_element_to_ids

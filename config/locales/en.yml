@@ -10,6 +10,7 @@ en:
       invalid_referential_in_list: "at least one value in the list is not an allowed referential."
       reference_id_not_scalar: "the identifier must be a single value."
       cannot_replace_association: "the record already associated cannot be replaced here; update it by its own id or replace it in the caller."
+      outside_association_scope: "the record is outside the association's own scope, so it cannot be attached to it."
       reference_write_refused: "the associated records cannot be changed here, as it would write to the database before the request is validated; change them in the caller."
     invalid_nil_value_error: "Field %{field} cannot be null or blank."
     unauthorized_field_error: "Field %{field} cannot be set by this caller."
