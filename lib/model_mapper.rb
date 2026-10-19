@@ -1127,7 +1127,7 @@ module ModelMapper
   end
 
   def valid_custom_value?(value, param_config, source_params, _target_object)
-    instance_exec(value, source_params, &param_config.allowing_value)
+    ModelMapper::ParamConfig.call_rule(param_config.allowing_value, self, [value, source_params])
   end
 
   # Unified `association` reference mode: resolve the existing record(s) from the payload section,

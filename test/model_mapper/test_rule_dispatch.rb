@@ -182,6 +182,49 @@ class TestRuleDispatch < Minitest::Test
     assert_includes mapper.errors.keys.map(&:to_s), 'status'
   end
 
+  # --- type :custom's allowing: (value, params), on the mapper --------------------------------------
+
+  def custom_mapper(rule)
+    mapper_class do
+      attribute(:code) do
+        type :custom
+        allowing rule
+      end
+    end
+  end
+
+  def test_custom_hands_a_one_argument_rule_the_value_on_the_mapper
+    log = []
+    mapper = map(custom_mapper(->(value) { log << [self, value] && value.upcase }), { code: 'ab' })
+
+    assert_equal [[mapper, 'ab']], log, 'a `->(value)` validator is instance_exec-ed (it raised ArgumentError before)'
+    assert_equal 'AB', mapper.record.code
+  end
+
+  def test_custom_calls_a_rule_without_arguments
+    mapper = map(custom_mapper(-> { 'fixed' }), { code: 'ab' })
+
+    assert_equal 'fixed', mapper.record.code
+  end
+
+  def test_custom_hands_an_optional_argument_rule_the_value_and_the_params
+    log = []
+    map(custom_mapper(->(value, params = nil) { log << [value, params] && value }), { code: 'ab' })
+
+    assert_equal [['ab', { code: 'ab' }]], log
+  end
+
+  def test_custom_hands_a_splat_rule_the_value_and_the_params
+    log = []
+    map(custom_mapper(->(*args) { log << args && 'x' }), { code: 'ab' })
+
+    assert_equal [['ab', { code: 'ab' }]], log
+  end
+
+  def test_custom_still_raises_on_a_rule_requiring_three_arguments
+    assert_raises(ArgumentError) { map(custom_mapper(->(_a, _b, _c) { 'x' }), { code: 'ab' }) }
+  end
+
   # --- a plain value answers for itself -------------------------------------------------------------
 
   def test_plain_values_are_taken_as_written

@@ -364,8 +364,8 @@ default ->(params) { params[:fallback_name] }
 
 A `default` or `allowing` lambda is `instance_exec`ed on the mapper and handed the source params when
 its signature accepts an argument — required or optional: `->(params = nil)` gets them too. (The
-`allowing` of a `type :custom` attribute is a validator, always called with `(value, source_params)`:
-see [`:custom`](#custom).)
+`allowing` of a `type :custom` attribute is a validator: its list is `(value, source_params)`, see
+[`:custom`](#custom).)
 
 ### `map_if`
 
@@ -514,7 +514,7 @@ end
 
 ### `:custom`
 
-Passes the value through a lambda for arbitrary validation/transformation. The lambda receives `(value, source_params)` and is executed via `instance_exec`.
+Passes the value through a lambda for arbitrary validation/transformation. The lambda is executed via `instance_exec` on the mapper and receives as many of `(value, source_params)` as its signature accepts: `->(value)` gets the value only, `->(value, params)` both.
 
 ```ruby
 attribute :code do

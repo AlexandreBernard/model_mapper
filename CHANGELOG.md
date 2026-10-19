@@ -182,8 +182,9 @@ lambda accepts, as `map_if` and `authorize` already did, and hand it that many o
 `(params, target)` for `required`, `(params)` for `default` and `allowing`; the receiver is unchanged
 (`required` calls the lambda, the other two `instance_exec` it on the mapper). `required -> { … }`,
 `required ->(params = nil) { … }` and a rule with an optional keyword (`->(params, k: 1)`), which
-raised, now work. The `allowing` of a `type :custom` attribute is a validator and keeps its own call,
-`(value, source_params)`.
+raised, now work. The `allowing` of a `type :custom` attribute, a validator, is dispatched the same
+way on its own list, `(value, source_params)`, still `instance_exec`ed on the mapper: `->(value)` and
+`-> { … }`, which raised, now work, and every signature that worked gets what it got.
 
 A value `immediate_write false` refused was refused at assignment, after the whole validation loop, so
 the params declared after it had already read it through its reader: a `map_if`, `authorize`,

@@ -83,9 +83,10 @@ handed them — and the owner may reverse it (below).
 
 ## Out of scope
 
-- The `allowing` of a `type :custom` attribute (`valid_custom_value?`) is a validator called with
-  `(value, source_params)`, not a scope; it keeps that fixed call. `->(value)` raises there, before
-  and after.
+- ~~The `allowing` of a `type :custom` attribute stays out.~~ Reversed by the owner (batch second
+  round, 2026-10-19): `valid_custom_value?` now goes through
+  `call_rule(allowing, mapper, [value, source_params])`. `->(value)` and `-> {}` work; `->(v, p)`,
+  `->(v, p = nil)`, `->(*a)` and `proc { |v| }` get what they got; `->(a, b, c)` still raises.
 - No class-load check of a `required` / `default` / `allowing` rule's signature (as `authorize` has):
   `->(a, b)` on `default` still raises at mapping time, as today.
 - No new argument for `default` / `allowing` (e.g. the target): their argument list stays `(params)`.
