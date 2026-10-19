@@ -1135,29 +1135,11 @@ module ModelMapper
   end
 
   def set_default_value(_value, source_params, param_config)
-    if param_config.default_value.is_a?(Proc)
-      case param_config.default_value.arity
-      when 1
-        instance_exec(source_params, &param_config.default_value)
-      else
-        instance_exec(&param_config.default_value)
-      end
-    else
-      param_config.default_value
-    end
+    ModelMapper::ParamConfig.call_rule(param_config.default_value, self, [source_params])
   end
 
   def allowed_values(param_config, source_params)
-    if param_config.allowing_value.is_a?(Proc)
-      case param_config.allowing_value.arity
-      when 1
-        instance_exec(source_params, &param_config.allowing_value)
-      else
-        instance_exec(&param_config.allowing_value)
-      end
-    else
-      param_config.allowing_value
-    end
+    ModelMapper::ParamConfig.call_rule(param_config.allowing_value, self, [source_params])
   end
 
   # Whether the payload asks for this param to be CLEARED: its key is present carrying a null, or —

@@ -97,6 +97,11 @@ raises `TypeError`.
   from `SaveOptionRemovedError`, which covers the earlier removal of the `map_to_model(save:)`
   keyword.) The `ParamConfig#save?` predicate is renamed `assign?` with it, and has no alias.
 
+A `default` or `allowing` lambda whose parameters are all optional or a splat (`->(params = nil)`,
+`->(*args)`, `proc { |a, b| }`) used to be called with no argument and is now handed the source
+params, as `required`, `map_if` and `authorize` hand theirs: `default ->(p = nil) { p ? x : y }` now
+returns `x`.
+
 ### Deprecated
 
 An explicit `null`, or an empty list on a multi-valued param, on a param without `nullable` is still
@@ -166,6 +171,17 @@ A legacy `attribute :category_id do type :referential; allowing … end` stored 
 reader: `mapper.category` raised `NoMethodError`. A scalar `type :referential` param ending in `_id`
 now gets the `category` reader too (`nil` while the value is absent); a `type :referential` list
 (`multiple true`) gets none.
+
+`required`, `default` and `allowing` picked a lambda's arguments from `Proc#arity`, which is negative
+as soon as the signature has an optional argument, so the same lambda was called differently by each:
+`->(params, extra = nil)` got `(params, target)` from `required` and raised `ArgumentError` under
+`default` and `allowing`, which handed it nothing. All three now count the positional arguments a
+lambda accepts, as `map_if` and `authorize` already did, and hand it that many of their own list —
+`(params, target)` for `required`, `(params)` for `default` and `allowing`; the receiver is unchanged
+(`required` calls the lambda, the other two `instance_exec` it on the mapper). `required -> { … }`,
+`required ->(params = nil) { … }` and a rule with an optional keyword (`->(params, k: 1)`), which
+raised, now work. The `allowing` of a `type :custom` attribute is a validator and keeps its own call,
+`(value, source_params)`.
 
 ## 0.4.1
 
