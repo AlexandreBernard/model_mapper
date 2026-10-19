@@ -84,6 +84,12 @@ module ModelMapper
       id_field(value)
     end
 
+    # @deprecated Use {#id_field} instead. Its 0.4.1 name, kept working, emits a deprecation warning.
+    def identifier(value)
+      warn "[ModelMapper] `identifier` is deprecated; use `id_field` instead (attribute `#{@name}`)."
+      id_field(value)
+    end
+
     def allowing(value)
       @allowing_value = value
     end

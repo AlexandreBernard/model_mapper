@@ -283,6 +283,7 @@ to `association` (`nullable:` and `immediate_write:` are also accepted as keywor
 | `of` | Symbol | `nil` | Element type for a `type :array` of **scalars** |
 | `multiple` | Bool | `false` | `:enumerated` only — accept an array of values |
 | `field` | Symbol | `:id` | **Deprecated** — use `id_field` |
+| `identifier` | Symbol | `:id` | **Deprecated** (its 0.4.1 name) — use `id_field` |
 | `condition` | Proc | `nil` | **Deprecated** — use `map_if` |
 
 ### `required`
@@ -796,6 +797,9 @@ removed in a later release. See `CHANGELOG.md`.
 | `field :col` | `id_field :col` |
 | `condition -> { … }` | `map_if -> { … }` |
 | `at :a, :b` | `from :a, :b` |
+
+`identifier :col`, the name 0.4.1 gave `id_field`, is deprecated since the release after it: it
+still works and warns at each declaration. Replace it with `id_field :col`.
 
 `type :array` with a scalar `of` (`:string`, `:integer`, `:float`, `:date`, `:boolean`,
 `:enumerated`, `:custom`, `:any`) is **not** deprecated.

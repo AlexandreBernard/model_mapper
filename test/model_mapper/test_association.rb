@@ -1138,6 +1138,42 @@ class TestAssociation < Minitest::Test
     end
   end
 
+  def test_field_warning_points_at_id_field
+    assert_output(nil, /`field` is deprecated; use `id_field` instead \(attribute `category`\)/) do
+      Class.new do
+        include ModelMapper
+        map_model { attribute(:category) { field :name } }
+      end
+    end
+  end
+
+  # `identifier` shipped in 0.4.1 and was renamed `id_field`: a 0.4.1 mapper must still load, warn
+  # once at class load, and look the reference up by the column it names.
+  def test_identifier_is_deprecated_and_still_sets_the_lookup_column
+    mapper_class = nil
+    assert_output(nil, /\A\[ModelMapper\] `identifier` is deprecated; use `id_field` instead \(attribute `category`\)\.\n\z/) do
+      mapper_class = Class.new do
+        include ModelMapper
+        map_model do
+          association :category do
+            identifier :name
+            allowing -> { Category.all }
+          end
+        end
+      end
+    end
+    category = Category.create!(name: 'ByIdentifier', enabled: true)
+
+    mapper = nil
+    assert_silent do
+      mapper = mapper_class.map_to_model(Widget.new, { category: { name: 'ByIdentifier' } })
+      mapper_class.map_to_model(Widget.new, { category: { name: 'ByIdentifier' } })
+    end
+
+    assert_predicate mapper, :valid?, mapper.errors.inspect
+    assert_equal category.id, mapper.record.category.id
+  end
+
   def test_condition_is_deprecated
     assert_output(nil, /`condition` is deprecated/) do
       Class.new do
