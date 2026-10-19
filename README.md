@@ -221,7 +221,10 @@ end
   as `nil` to the params declared after it (their `map_if`, `authorize`, `allowing`, `required`,
   `default`), as a param that failed validation does — a rule that trips over that `nil` is reported
   as an error on its own param — so nothing they decide rests on it; `before_assignation` and
-  everything after the loop read it as usual.
+  everything after the loop read it as usual. Two consequences are accepted: the forecast is made
+  before `before_assignation`, so a value the hook then puts back (nothing refused in the end) was
+  still `nil` to those params; and while a value is withheld, any exception a later rule raises — even
+  one unrelated to it — is reported as an error on that rule's param instead of propagating.
 - **Error reporting differs by mode for 1‑N** (worth knowing): a 1‑N **reference** fails fast — the
   first out-of-scope element raises and any already-resolved elements are discarded, so only one
   `name.N.id` is reported. A 1‑N **upsert** collects every out-of-scope id and reports them all. Both
