@@ -439,6 +439,105 @@ class UpsertPartsByNameMapper
 
 end
 
+# Legacy `type :referential` on an `_id` attribute: the run stores both `@category_id` and `@category`,
+# so both get a reader.
+class LegacyRefIdMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :category_id do
+      type :referential
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# A plain integer `_id` attribute never stores a record, so it gets no de-suffixed reader.
+class PlainIdMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :category_id do
+      type :integer
+    end
+  end
+
+end
+
+# A list of referentials resolves to a relation, never a single record: no de-suffixed reader.
+class LegacyRefIdListMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :category_id do
+      type :referential
+      multiple true
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# A class that defines its own `category` keeps it.
+class LegacyRefIdOwnReaderMapper
+
+  include ModelMapper
+
+  def category = :own
+
+  map_model do
+    attribute :category_id do
+      type :referential
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# A single reference declared under its `_id` name stores both `@category_id` and `@category`.
+class RefIdNamedMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category_id do
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# A 1-n reference declared under an `_id` name: 0.4.1 shipped its de-suffixed reader, and a fix keeps it.
+class RefIdNamedManyMapper
+
+  include ModelMapper
+
+  map_model do
+    association :category_id, many: true do
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# An `_id` param with an `allowing` list but no record lookup never stores a record.
+class EnumeratedIdMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :category_id do
+      type :enumerated
+      allowing [1, 2]
+    end
+  end
+
+end
+
 class TestAssociation < Minitest::Test
 
   # --- 1-1 reference --------------------------------------------------------
@@ -954,6 +1053,68 @@ class TestAssociation < Minitest::Test
     refute_predicate mapper, :valid?
     assert_includes mapper.errors.keys, 'category'
     assert_empty mapper.widget.parts
+  end
+
+  # A legacy `type :referential` `_id` attribute exposes the de-suffixed record reader too, as the
+  # README promises for the `@category_id` + `@category` pair the run stores.
+  def test_legacy_referential_id_exposes_the_de_suffixed_reader
+    category = Category.create!(name: 'Legacy', enabled: true)
+    mapper   = LegacyRefIdMapper.map_to_model(Widget.new, { category_id: category.id })
+
+    assert_predicate mapper, :valid?
+    assert_equal category.id, mapper.category_id
+    assert_equal category, mapper.category
+  end
+
+  # Declared at definition time like the other readers: present (nil) when the value is absent. A fresh
+  # class, so no earlier mapping can have defined the reader first.
+  def test_legacy_referential_id_reader_exists_when_absent
+    klass = Class.new do
+      include ModelMapper
+
+      map_model do
+        attribute :category_id do
+          type :referential
+          allowing -> { Category.enabled }
+        end
+      end
+    end
+
+    assert klass.method_defined?(:category)
+    assert_nil klass.map_to_model(Widget.new, {}).category
+  end
+
+  def test_reference_named_with_id_exposes_the_de_suffixed_reader
+    category = Category.create!(name: 'RefId', enabled: true)
+    mapper   = RefIdNamedMapper.map_to_model(Widget.new, { category_id: { id: category.id } })
+
+    assert_predicate mapper, :valid?
+    assert_equal category.id, mapper.category_id
+    assert_equal category, mapper.category
+    assert_respond_to RefIdNamedMapper.map_to_model(Widget.new, {}), :category
+  end
+
+  def test_reference_many_named_with_id_keeps_the_de_suffixed_reader
+    assert RefIdNamedManyMapper.method_defined?(:category)
+  end
+
+  def test_enumerated_id_attribute_gets_no_de_suffixed_reader
+    refute EnumeratedIdMapper.method_defined?(:category)
+  end
+
+  def test_plain_id_attribute_gets_no_de_suffixed_reader
+    refute PlainIdMapper.method_defined?(:category)
+  end
+
+  def test_referential_id_list_gets_no_de_suffixed_reader
+    refute LegacyRefIdListMapper.method_defined?(:category)
+  end
+
+  def test_legacy_referential_id_keeps_a_reader_the_class_defines
+    category = Category.create!(name: 'Own', enabled: true)
+    mapper   = LegacyRefIdOwnReaderMapper.map_to_model(Widget.new, { category_id: category.id })
+
+    assert_equal :own, mapper.category
   end
 
   # --- record validations keyed on the params path --------------------------
