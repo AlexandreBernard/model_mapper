@@ -830,7 +830,7 @@ removed in a later release. See `CHANGELOG.md`.
 | `condition -> { … }` | `map_if -> { … }` |
 | `at :a, :b` | `from :a, :b` |
 
-`identifier :col`, the name 0.4.1 gave `id_field`, is deprecated since the release after it: it
+`identifier :col`, the name 0.4.1 gave `id_field`, is deprecated since **0.5.0**: it
 still works and warns at each declaration. Replace it with `id_field :col`.
 
 `type :array` with a scalar `of` (`:string`, `:integer`, `:float`, `:date`, `:boolean`,
