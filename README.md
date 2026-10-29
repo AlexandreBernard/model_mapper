@@ -254,7 +254,8 @@ attribute :statuses do
 end
 ```
 
-- The attribute's `allowing` applies to every element (so `:enumerated` elements share one scope).
+- The attribute's `allowing` applies to every element — one scope for `:enumerated` elements, one
+  frame for scalar ones (see [`allowing`](#allowing)).
 - An empty array is treated as blank (like any empty value): dropped when optional, an error when
   `required`.
 
@@ -291,7 +292,7 @@ to `association` (`nullable:` and `immediate_write:` are also accepted as keywor
 |---|---|---|---|
 | `from` | `*keys` | `[name]` | Key path for `Hash#dig` into the source params (the section, for an association) — was `at` |
 | `id_field` | Symbol | `:id` | Reference/upsert: the key read inside the `from` section **and** the `find_by` column — replaces `field` |
-| `allowing` | various | `nil` | Allowed values/records — Array, AR scope, or lambda. Reference mode of `association`; also `:enumerated`/`:custom` |
+| `allowing` | various | `nil` | What the param accepts — meaning set by its `type`: scope (reference), list (`:enumerated`), validator (`:custom`), frame everywhere else — see below |
 | `with` | class, lambda | `nil` | Sub-mapper (+ optional context lambda) for an `association` built/upserted via `accepts_nested_attributes_for` |
 | `many:` | Bool | `false` | `association` cardinality — `true` ⇒ 1‑N (kwarg on `association`) |
 | `map_if` | Proc | `nil` | Block method controlling whether the attribute/association is processed — replaces `condition` |
@@ -308,6 +309,64 @@ to `association` (`nullable:` and `immediate_write:` are also accepted as keywor
 | `field` | Symbol | `:id` | **Deprecated** — use `id_field` |
 | `identifier` | Symbol | `:id` | **Deprecated** (its 0.4.1 name) — use `id_field` |
 | `condition` | Proc | `nil` | **Deprecated** — use `map_if` |
+
+### `allowing`
+
+What the param accepts. Its meaning is set by the `type` it is declared next to — the gem never
+guesses:
+
+| `type` | what `allowing` means | what lands on the record |
+|---|---|---|
+| `:enumerated` | the list of accepted values (every element under `multiple true`) | the value as sent |
+| `:custom` | a **validator-transformer**: what it returns IS the value | what the **rule** returned |
+| `association` (reference / upsert), `:referential` | the **scope** the referenced record is looked up in | the record (its id, for the deprecated `:referential`) |
+| `:array` | applies to the element type `of` names, element by element | per `of`, and a refusal is keyed on the element (`numbers.2`) |
+| anything else — `:boolean`, `:string`, `:integer`, `:float`, `:date`, **or no `type` at all** | a **frame**: the rule only answers whether the value is accepted | the value as produced, unchanged |
+
+A frame is the one that leaves the value alone: whatever produced the value — a type cast, a
+`default`, a clearing, or the payload as sent when no `type` casts it — the rule says only yes or no,
+which is what separates it from a `type :custom` validator.
+
+**A declared `allowing` always runs.** Nothing silently ignores it: if its type does not read it, it
+frames. What keeps it from running is never the declaration, only the mapping — nothing lands (absent
+key, blank value, a null skipped for want of `nullable`) or something already refused the field
+(`required`, `nullable false`, `authorize`, the type's own format check).
+
+```ruby
+attribute :workshop_enabled do
+  from :workshop
+  type :boolean
+  # Giving the module up is reserved to the support; taking it is not.
+  allowing ->(value, _source) { value || support? || !company.workshop_enabled }
+end
+```
+
+- The rule is `instance_exec`ed on the mapper and handed as many of `(value, source_params)` as its
+  signature accepts — required or optional, zero included — so it reads the `record_alias`, the
+  keyword context and the params already mapped, by name.
+- It is handed the value **after** the type cast when there is one — on a `type :boolean`, `"no"`
+  reaches it as `false` — and the value as sent when no `type` casts it.
+- A falsy answer refuses the field with an `InvalidValueError` keyed on its payload path (`from`
+  included), so the rule never has to know the path it guards. A truthy answer leaves the cast value
+  as it is — whatever the rule returned.
+- A frame declared as a plain value answers by inclusion (`allowing [1, 2, 3]`), like an
+  `:enumerated` list.
+- Nothing is assigned before the validation loop ends, so the rule reads the record's **previous**
+  value (its associations included): a rule about a transition (`true` ⇒ `false`) can be written on
+  the attribute it constrains.
+- `false` is weighed like any other value. On a framed param it first goes through the declared type,
+  so a `type :integer` handed `false` answers with its own format error; on a param with no frame it
+  is still assigned as sent and left to the column's own cast.
+- A **clearing request** is a value the caller asked to write, so it is framed too: under
+  `nullable true` the rule is handed the `nil` that is about to land, and `allowing [true, false]`
+  refuses the null it does not list where `allowing [true, false, nil]` accepts it. `nullable false`
+  refuses the null before the rule, and an undeclared `nullable` skips it — nothing lands, nothing is
+  weighed. Write a rule that answers for `nil` whenever the param is `nullable true`.
+- On a `type :array` the rule weighs elements, so an emptied list (`[]`, a clearing) has none to
+  weigh: what governs it there is `nullable`.
+- A blank value that writes nothing (absent key, `""`, a skipped null) never reaches the frame.
+- `default_on_invalid true` answers for a value the **type** could not read, not for one the rule
+  refused: a frame refusal stays a refusal, and the `default` that does land is itself framed.
 
 ### `required`
 
@@ -333,7 +392,7 @@ element (`JSON.stringify({ parts: [] })`).
 | `nullable` | Clearing request (`null`, or `[]` on a multi-valued param) |
 |---|---|
 | undeclared | treated like an absent key (skipped, or replaced by its `default`) — **deprecated**, emits a warning |
-| `true` | clears the value: `nil`, or `[]` for a collection (`many: true`, `type :array`); `default`, `allowing` and type validation do not apply |
+| `true` | clears the value: `nil`, or `[]` for a collection (`many: true`, `type :array`); `default` and type validation do not apply, a framed [`allowing`](#allowing) weighs the cleared value |
 | `false` | refused with an `InvalidNilValueError` on the param's path; the key itself stays optional |
 
 ```ruby
@@ -379,10 +438,10 @@ default -> { Time.current }
 default ->(params) { params[:fallback_name] }
 ```
 
-A `default` or `allowing` lambda is `instance_exec`ed on the mapper and handed the source params when
-its signature accepts an argument — required or optional: `->(params = nil)` gets them too. (The
-`allowing` of a `type :custom` attribute is a validator: its list is `(value, source_params)`, see
-[`:custom`](#custom).)
+A `default` lambda is `instance_exec`ed on the mapper and handed the source params when its signature
+accepts an argument — required or optional: `->(params = nil)` gets them too. (An `allowing` lambda
+is handed `(value, source_params)` on a scalar frame and on a `type :custom`, and the source params
+alone on a reference scope — see [`allowing`](#allowing).)
 
 ### `map_if`
 
@@ -541,6 +600,10 @@ end
 ```
 
 Return the transformed value. Raise `ModelMapper::InvalidValueError` to reject.
+
+> On a `:custom` the rule PRODUCES the value; on a scalar type it only frames the one the type
+> produced (see [`allowing`](#allowing)). Reach for `:custom` when the value must be transformed,
+> for a frame when it must only be accepted or refused under its declared type.
 
 ### `:float`
 

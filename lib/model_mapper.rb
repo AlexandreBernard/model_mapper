@@ -336,7 +336,15 @@ module ModelMapper
             end
           end
         end
-        value, default_holder = validate_param(param_config, raw_value, source_params, target_object, allow_nil) unless cleared
+        if cleared
+          # A clearing is a value the caller asked to write, so a frame weighs it like any other. The
+          # rule is handed what lands — nil, or [] for a collection — and `allowing [true, false]`
+          # refuses the null it does not list, while `nullable false` refuses it before this point.
+          frame_value!(value, param_config, source_params) if param_config.allowing_frames?
+        else
+          value, default_holder =
+            validate_param(param_config, raw_value, source_params, target_object, allow_nil)
+        end
 
         if param_config.authorize? && !resolved_write_authorized?(param_config, source_params, target_object,
                                                                    value, cleared, default_holder)
@@ -912,7 +920,7 @@ module ModelMapper
     value_blank = value.nil? || (value.respond_to?(:empty?) && value.empty?)
     raise ModelMapper::InvalidNilValueError.new(keys.join('.')) if value_blank && value != false && !allow_nil
 
-    if value && param_config.type_value && respond_to?("valid_#{param_config.type_value}_value?", true)
+    if type_validated?(value, param_config)
       value =
         begin
           reject_invalid_encoding!(value, keys.join('.'))
@@ -925,7 +933,45 @@ module ModelMapper
         end
     end
 
+    # The frame weighs what is about to be written, whatever produced it — the cast payload value,
+    # the value as sent when no type casts it, or the `default` that replaced an invalid one. Outside
+    # the rescue above on purpose: `default_on_invalid` answers for a value the TYPE could not read,
+    # not for one the rule refused, and the default it lands is itself weighed.
+    frame_value!(value, param_config, source_params) if !value.nil? && param_config.allowing_frames?
+
     [value, landed_default]
+  end
+
+  # Whether the declared type validator runs on this value. A blank value carries nothing to cast and
+  # is left as it is — except `false` on a framed param: the frame weighs the value the record would
+  # hold, so it must be the one the declared type produces (and a `type :integer` handed `false` says
+  # so). Lifted no further than that on purpose: on a param with no frame, `false` is still assigned
+  # as sent and left to the column's own cast.
+  def type_validated?(value, param_config)
+    return false unless param_config.type_value && respond_to?("valid_#{param_config.type_value}_value?", true)
+
+    !!value || (value.equal?(false) && param_config.allowing_frames?)
+  end
+
+  # Weigh a framed `allowing` (every type but ParamConfig::ALLOWING_READER_TYPES, no type included):
+  # the value handed to the rule is the one that gets assigned — the rule only answers whether it is
+  # accepted, which is what separates a frame from a `type :custom` validator, whose return value IS
+  # the value. A Proc gets as many of `(value, source_params)` as its signature accepts, through the
+  # one rule dispatch, so it is `instance_exec`ed on the mapper and reads the record alias and the
+  # context by name; anything else answers by inclusion, as an `:enumerated` list does. A falsy answer
+  # refuses the field BY NAME: the rule never has to know the payload path it guards.
+  def frame_value!(value, param_config, source_params)
+    rule = param_config.allowing_value
+    rule = rule.to_proc if rule.is_a?(Method)
+    accepted =
+      if rule.is_a?(Proc)
+        ModelMapper::ParamConfig.call_rule(rule, self, [value, source_params])
+      else
+        rule.include?(value)
+      end
+    return if accepted
+
+    raise ModelMapper::InvalidValueError.new(param_config.keys.join('.'))
   end
 
   # An invalidly encoded string (`"\xFF"`, which `JSON.parse` lets through) is malformed whatever the
@@ -1008,7 +1054,7 @@ module ModelMapper
     end
 
     element_type = param_config.of_value
-    return value if element_type == :any
+    return value if element_type == :any && !param_config.allowing_frames_elements?
 
     validator = :"valid_#{element_type}_value?"
     value.each_with_index.map do |element, index|
@@ -1016,12 +1062,13 @@ module ModelMapper
     end
   end
 
-  # Validate one array element through the element validator, re-keying any error with the element
-  # index so the failing position surfaces (e.g. "tag_ids.2").
+  # Validate one array element through the element validator — then, when the element type is framed,
+  # through the attribute's `allowing` — re-keying any error with the element index so the failing
+  # position surfaces (e.g. "tag_ids.2").
   def validate_array_element(element, index, validator, param_config, source_params, target_object)
-    return element unless respond_to?(validator, true)
-
-    send(validator, element, param_config, source_params, target_object)
+    cast = respond_to?(validator, true) ? send(validator, element, param_config, source_params, target_object) : element
+    frame_value!(cast, param_config, source_params) if param_config.allowing_frames_elements?
+    cast
   rescue ModelMapper::InvalidValueError, ModelMapper::InvalidFormatError => e
     raise reindex_array_error(e, "#{param_config.keys.join('.')}.#{index}")
   end

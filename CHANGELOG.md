@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased
+
+### Fixed — `allowing` applies wherever it is declared, instead of being ignored
+
+Up to 0.5.0, an `allowing` declared next to a scalar `type` — or on a param with no `type` at all —
+was never called. `valid_boolean_value?`
+and `valid_string_value?` took the param config and did not read it; the integer, float and date
+validators never looked at it. No error and no warning: a rule that raised on every value let `true`,
+`false` and `"no"` through alike, and a field declared constrained was wide open. Only
+`:referential`, `:enumerated`, `:custom` and the `association` modes read it.
+
+It now applies, as a **frame**: whatever produced the value, the rule only answers whether it is
+accepted. A declared `allowing` is never silently ignored again — if the type does not read it, it
+frames; a param with no `type` at all frames the value as the payload sent it, since nothing casts
+it.
+
+```ruby
+attribute :workshop_enabled do
+  from :workshop
+  type :boolean
+  # Giving the module up is reserved to the support; taking it is not.
+  allowing ->(value, _source) { value || support? || !company.workshop_enabled }
+end
+```
+
+A falsy answer refuses the field with an `InvalidValueError` keyed on its payload path (`from`
+included), so the rule never has to know the path it guards; a truthy one leaves the value untouched
+— whatever the rule returned. That is what separates a frame from a `type :custom` validator, whose
+return value IS the value, and it is why a rule can now live on the attribute it constrains instead
+of in a `before_assignation` hook far from it. The rule goes through the one rule dispatch
+(`ParamConfig.call_rule`): it is `instance_exec`ed on the mapper and handed as many of
+`(value, source_params)` as its signature accepts, so it reads the `record_alias`, the keyword
+context and the params already mapped, by name. Nothing is assigned before the validation loop ends,
+so what it reads on the record is still the **previous** value — a rule about a transition
+(`true` ⇒ `false`) is writable. A frame declared as a plain value answers by inclusion
+(`allowing [1, 2, 3]`), like an `:enumerated` list.
+
+What the rule weighs is what is about to be written: the cast payload value, the value as sent when
+no `type` casts it, the `default` that replaced an invalid one — and the **clearing** a caller asked
+for. Under `nullable true` the rule is handed the `nil` that is about to land, so
+`allowing [true, false]` refuses the null it does not list where `allowing [true, false, nil]`
+accepts it, and a rule on a nullable param must answer for `nil`. `nullable false` refuses the null
+before the rule and an undeclared `nullable` skips it, so nothing is weighed in either case.
+`default_on_invalid true` keeps answering for a value the TYPE could not read, not for one the rule
+refused: a frame refusal stays a refusal, and the default that lands is itself framed.
+
+`:enumerated`, `:custom`, `:referential` and the `association` modes keep reading `allowing` for
+themselves, unchanged.
+
+On a `type :array`, `allowing` keeps applying to the element type `of` names — a scope for
+`of :enumerated` / `of :referential`, as before, and now a frame for every other `of` (a scalar one,
+or `of :any`, which leaves the element as it is), element by element, with the refusal keyed on the
+element (`numbers.2`).
+
+### Changed
+
+`false` now reaches the declared type validator — but only on a param that declares an `allowing`,
+which is what the frame needs to weigh the value the record would hold. Everywhere else the
+validation loop still leaves a falsy value alone, so a `false` sent to a `type :integer` keeps being
+assigned as sent and cast by the column (to `0`) rather than becoming an `InvalidFormatError`.
+Running the validator on every `false` would be more correct — a `false` is not an integer, nor a
+date, nor a float — but it changes the answer of every mapper of every application, so it is left as
+a possible later evolution rather than folded into this fix. On a framed param it is already the
+behaviour: the declared type governs.
+
 ## 0.5.0
 
 ### Added — per-field authorization with `authorize`

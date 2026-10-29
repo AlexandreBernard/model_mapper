@@ -9,6 +9,18 @@ module ModelMapper
     # declare fewer; it is then called with just as many.
     RULE_ARGUMENTS = 3
 
+    # The types whose validator READS `allowing` for itself, each in its own way: the scope a
+    # `:referential` / `:reference` is looked up in, the list an `:enumerated` must belong to, the
+    # validator-transformer a `:custom` passes through. A sub-mapper (`with`) reads it too, as the
+    # scope of its upsert lookup. Everywhere else — every scalar type, and no type at all — `allowing`
+    # FRAMES the value instead: whatever produced it, the rule only answers whether it is accepted.
+    ALLOWING_READER_TYPES = %i[referential reference enumerated custom].freeze
+
+    # Whether the validator of TYPE reads `allowing` for itself, rather than leaving it to frame.
+    def self.allowing_read_by_type?(type)
+      ALLOWING_READER_TYPES.include?(type)
+    end
+
     # How many positional arguments a Proc REQUIRES. Read off `parameters` rather than `arity`, which
     # also counts a required keyword. A plain proc requires none: it tolerates missing arguments.
     def self.required_arity(rule)
@@ -102,6 +114,15 @@ module ModelMapper
       id_field(value)
     end
 
+    # What this param accepts. Its meaning follows the `type` it is declared next to: a scope for a
+    # reference or an upsert, the list of an `:enumerated`, the validator-transformer of a `:custom`
+    # (see {ALLOWING_READER_TYPES}). Anywhere else — a scalar type, or no type at all — it is a FRAME:
+    # whatever produced the value (a type cast, a `default`, a clearing, or the payload as sent when
+    # nothing casts it), the rule only answers whether it is accepted.
+    #   allowing %w[active archived]                       # :enumerated — the list
+    #   allowing -> { Zone.enabled }                       # reference — the scope
+    #   allowing ->(value, _source) { value.upcase }       # :custom — the value it returns
+    #   allowing ->(value, _source) { value || support? }  # :boolean — a frame: yes or no
     def allowing(value)
       @allowing_value = value
     end
@@ -338,6 +359,18 @@ module ModelMapper
     # Whether an `allowing` scope was declared.
     def allowing?
       !@allowing_value.nil?
+    end
+
+    # Whether this param's `allowing` frames the value instead of being read by its type. An untyped
+    # param frames too: nothing casts its value, so the rule weighs it as the payload sent it.
+    def allowing_frames?
+      allowing? && !array? && !mapper? && !self.class.allowing_read_by_type?(@type_value)
+    end
+
+    # Same, one level down: on a `type :array`, `allowing` applies to the element type (`of`), so an
+    # element type that does not read it frames every element — under its own indexed field path.
+    def allowing_frames_elements?
+      allowing? && array? && !mapper? && !self.class.allowing_read_by_type?(@of_value)
     end
 
     # Unified `association` — reference mode: links existing record(s) by id, scoped, assigning the
