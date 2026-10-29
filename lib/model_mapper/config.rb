@@ -110,6 +110,7 @@ module ModelMapper
       @to_target   ||= :@record
       @params.each_value do |param_config|
         validate_array_param!(param_config)
+        validate_allowing_param!(param_config)
         validate_nullable_param!(param_config)
         validate_immediate_write_param!(param_config)
       end
@@ -155,6 +156,32 @@ module ModelMapper
         raise ModelMapper::ConfigurationError,
               "association `#{param_config.name}` requires `allowing` (reference) and/or `with` (build)"
       end
+    end
+
+    # A FRAMED `allowing` is called on every mapped request carrying the field, so a shape the mapper
+    # cannot call — `allowing true`, `allowing :a_method_name`, `allowing 5` — or a rule demanding more
+    # arguments than the frame hands it, would raise request after request. It is a declaration
+    # mistake, so it belongs here, next to the other declaration checks, for the same reason
+    # `authorize` refuses its own shape at class load. Only a frame is checked: the types that read
+    # `allowing` for themselves accept shapes of their own (a scope is an AR class or relation).
+    def validate_allowing_param!(param_config)
+      return unless param_config.allowing_frames? || param_config.allowing_frames_elements?
+
+      rule = param_config.allowing_value
+      unless rule.is_a?(Proc) || rule.is_a?(Method) || ModelMapper::ParamConfig.list_rule?(rule)
+        raise ModelMapper::ConfigurationError,
+              "attribute `#{param_config.name}`: a framed `allowing` takes a Proc or a list, got " \
+              "#{rule.inspect} — a value the mapper cannot call answers nothing"
+      end
+      return unless rule.respond_to?(:parameters)
+
+      arguments = ModelMapper::ParamConfig::ALLOWING_ARGUMENTS
+      return unless ModelMapper::ParamConfig.required_arity(rule) > arguments ||
+                    ModelMapper::ParamConfig.requires_keyword?(rule)
+
+      raise ModelMapper::ConfigurationError,
+            "attribute `#{param_config.name}`: a framed `allowing` rule takes at most #{arguments} " \
+            'positional arguments (value, source_params) and no required keyword'
     end
 
     # A param mapped by a sub-mapper (`association … with`, or the deprecated `type :association` /

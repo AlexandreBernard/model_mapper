@@ -302,11 +302,135 @@ class AllowingMessageChildMapper < AllowingMessageMapper
 
 end
 
+# `authorize` governs whether the caller may write the field at all, so it is weighed first — a
+# clearing included. A refused field is never evaluated, and the rule's message never reaches them.
+class AllowingAuthorizedMapper
+
+  include ModelMapper
+
+  class << self
+
+    attr_accessor :rule_calls
+
+  end
+
+  map_model do
+    attribute :name do
+      type :string
+      nullable true
+      authorize -> { support }
+      allowing lambda { |value|
+        self.class.rule_calls += 1
+        !value.nil?
+      }, message: 'the name cannot be cleared here.'
+    end
+  end
+
+end
+
+# Malformed bytes must not reach a user lambda: `match?` raises ArgumentError on them, and nothing
+# casts the value of an untyped param.
+class AllowingEncodingMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :name do
+      allowing ->(value) { value.match?(/\A[a-z-]+\z/) }
+    end
+  end
+
+end
+
+# The scope idiom written next to a scalar type: the rule answers with a LIST, not with a verdict.
+class AllowingScopeRuleMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :quantity do
+      type :integer
+      allowing -> { [1, 2, 3] }
+    end
+
+    attribute :category_id do
+      type :integer
+      allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# A `default` the frame refuses, by either route: an absent key, or a value the type could not read.
+class AllowingRefusedDefaultMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :quantity do
+      type :integer
+      default 50
+      default_on_invalid true
+      allowing ->(value) { value < 10 }
+    end
+
+    attribute :price do
+      type :float
+      default 99.0
+      allowing ->(value) { value < 10 }
+    end
+  end
+
+end
+
+# A declared constraint weighs `false` whatever reads it — the list of an `:enumerated`, the
+# validator of a `:custom` — and a param that declares none still takes it as sent.
+class AllowingFalseMapper
+
+  include ModelMapper
+
+  map_model do
+    attribute :status do
+      type :enumerated
+      allowing %w[open closed]
+    end
+
+    attribute :code do
+      type :custom
+      allowing ->(value, _source) { value.to_s }
+    end
+
+    attribute :quantity do
+      type :integer
+    end
+  end
+
+end
+
+# A message that is a Method object, not a Proc.
+class AllowingMethodMessageMapper
+
+  include ModelMapper
+
+  def self.why(_value)
+    'the method said so.'
+  end
+
+  map_model do
+    attribute :name do
+      type :string
+      allowing ->(_value) { false }, message: AllowingMethodMessageMapper.method(:why)
+    end
+  end
+
+end
+
 class TestAllowing < Minitest::Test
 
   def setup
     AllowingCountingMapper.calls = []
     AllowingMessageMapper.message_calls = 0
+    AllowingAuthorizedMapper.rule_calls = 0
   end
 
   # --- The frame itself --------------------------------------------------------------------------
@@ -486,10 +610,20 @@ class TestAllowing < Minitest::Test
   end
 
   def test_the_default_that_lands_is_framed_too
-    mapper = AllowingDefaultOnInvalidMapper.map_to_model(Widget.new, { quantity: 'abc' })
+    accepted = AllowingDefaultOnInvalidMapper.map_to_model(Widget.new, { quantity: 'abc' })
+    # The same route, with a default the rule refuses: the default is weighed, not waved through.
+    refused = AllowingRefusedDefaultMapper.map_to_model(Widget.new, { quantity: 'abc', price: '1.0' })
 
-    assert_predicate mapper, :valid?
-    assert_equal 1, mapper.record.quantity
+    assert_predicate accepted, :valid?
+    assert_equal 1, accepted.record.quantity
+    assert_equal ['quantity'], refused.errors.keys
+    assert_nil refused.record.quantity
+  end
+
+  def test_a_default_that_lands_on_an_absent_key_is_framed_too
+    mapper = AllowingRefusedDefaultMapper.map_to_model(Widget.new, {})
+
+    assert_equal %w[quantity price], mapper.errors.keys
   end
 
   # --- Clearing ----------------------------------------------------------------------------------
@@ -564,6 +698,107 @@ class TestAllowing < Minitest::Test
 
     assert_equal ['name'], mapper.errors.keys
     assert_nil mapper.errors['name'].details
+  end
+
+  # --- Order with the other rules -----------------------------------------------------------------
+
+  def test_an_unauthorized_clearing_is_refused_before_the_rule_weighs_it
+    widget = Widget.create!(name: 'Bolt')
+    mapper = AllowingAuthorizedMapper.map_to_model(widget, { name: nil }, support: false)
+
+    assert_instance_of ModelMapper::UnauthorizedFieldError, mapper.errors['name']
+    assert_equal 0, AllowingAuthorizedMapper.rule_calls
+    assert_equal 'Bolt', widget.name
+  end
+
+  def test_an_authorized_clearing_is_then_weighed_by_the_rule
+    widget = Widget.create!(name: 'Bolt')
+    mapper = AllowingAuthorizedMapper.map_to_model(widget, { name: nil }, support: true)
+
+    assert_equal 'the name cannot be cleared here.', mapper.errors['name'].details
+    assert_equal 1, AllowingAuthorizedMapper.rule_calls
+  end
+
+  def test_malformed_bytes_never_reach_the_rule
+    # `match?` would raise ArgumentError, out of a map_to_model documented as never raising.
+    mapper = AllowingEncodingMapper.map_to_model(Widget.new, { name: "ok\xFF".dup.force_encoding('UTF-8') })
+
+    assert_instance_of ModelMapper::InvalidFormatError, mapper.errors['name']
+  end
+
+  def test_false_is_weighed_by_the_type_that_reads_the_allowing_itself
+    enumerated = AllowingFalseMapper.map_to_model(Widget.new, { status: false })
+    custom     = AllowingFalseMapper.map_to_model(Widget.new, { code: false })
+    unweighed  = AllowingFalseMapper.map_to_model(Widget.new, { quantity: false })
+
+    # The list is consulted instead of being skipped, which used to assign `false` as sent.
+    assert_equal ['status'], enumerated.errors.keys
+    # The :custom validator runs, and what it returns is the value.
+    assert_predicate custom, :valid?
+    assert_equal 'false', custom.record.code
+    # A param that declares no constraint still takes `false` as sent, cast by the column.
+    assert_predicate unweighed, :valid?
+    assert_equal 0, unweighed.record.quantity
+  end
+
+  # --- Rule shapes ---------------------------------------------------------------------------------
+
+  def test_a_rule_that_answers_with_a_list_is_read_by_inclusion
+    accepted = AllowingScopeRuleMapper.map_to_model(Widget.new, { quantity: '2' })
+    refused  = AllowingScopeRuleMapper.map_to_model(Widget.new, { quantity: '9' })
+
+    assert_predicate accepted, :valid?
+    assert_equal ['quantity'], refused.errors.keys
+  end
+
+  def test_a_rule_that_answers_with_a_scope_does_not_wave_everything_through
+    # A Relation read as a plain truthy answer would accept any value on a field declared constrained.
+    mapper = AllowingScopeRuleMapper.map_to_model(Widget.new, { category_id: '999999' })
+
+    assert_equal ['category_id'], mapper.errors.keys
+  end
+
+  def test_a_method_message_is_resolved_like_a_proc
+    mapper = AllowingMethodMessageMapper.map_to_model(Widget.new, { name: 'Bolt' })
+
+    assert_equal 'the method said so.', mapper.errors['name'].details
+  end
+
+  def test_a_framed_rule_the_mapper_cannot_call_is_refused_at_declaration
+    mapper = Class.new do
+      include ModelMapper
+      map_model { attribute(:name) { allowing true } }
+    end
+
+    error = assert_raises(ModelMapper::ConfigurationError) { mapper.map_to_model(Widget.new, { name: 'Bolt' }) }
+
+    assert_match(/takes a Proc or a list/, error.message)
+  end
+
+  def test_a_framed_rule_demanding_too_many_arguments_is_refused_at_declaration
+    mapper = Class.new do
+      include ModelMapper
+      map_model do
+        attribute :name do
+          type :string
+          allowing ->(_target, _source, _value) { true }
+        end
+      end
+    end
+
+    error = assert_raises(ModelMapper::ConfigurationError) { mapper.map_to_model(Widget.new, { name: 'Bolt' }) }
+
+    assert_match(/at most 2 positional arguments/, error.message)
+  end
+
+  def test_a_scope_declared_on_a_reference_is_not_checked_as_a_frame
+    # `allowing Category` is a legitimate shape there, and nothing in the frame's checks may refuse it.
+    mapper = Class.new do
+      include ModelMapper
+      map_model { attribute(:category_id) { type :referential; allowing Category } }
+    end
+
+    assert_predicate mapper.map_to_model(Widget.new, {}), :valid?
   end
 
   # --- Without a type ----------------------------------------------------------------------------

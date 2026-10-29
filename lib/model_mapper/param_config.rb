@@ -9,6 +9,18 @@ module ModelMapper
     # declare fewer; it is then called with just as many.
     RULE_ARGUMENTS = 3
 
+    # What a framed `allowing` and its `message` are handed: (value, source_params).
+    ALLOWING_ARGUMENTS = 2
+
+    # Whether a rule — or what a rule returned — is a LIST, answering by inclusion rather than by its
+    # own truthiness: `allowing [1, 2, 3]`, and the scope idiom `allowing -> { Category.enabled }`
+    # written next to a scalar type, whose Relation would otherwise read as a plain truthy "accepted"
+    # and wave every value through. A String is not one: its `include?` matches a substring, which is
+    # never what a rule means.
+    def self.list_rule?(value)
+      !value.is_a?(String) && !value.is_a?(Proc) && value.respond_to?(:include?)
+    end
+
     # The types whose validator READS `allowing` for itself, each in its own way: the scope a
     # `:referential` / `:reference` is looked up in, the list an `:enumerated` must belong to, the
     # validator-transformer a `:custom` passes through. A sub-mapper (`with`) reads it too, as the

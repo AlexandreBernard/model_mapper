@@ -292,7 +292,7 @@ to `association` (`nullable:` and `immediate_write:` are also accepted as keywor
 |---|---|---|---|
 | `from` | `*keys` | `[name]` | Key path for `Hash#dig` into the source params (the section, for an association) — was `at` |
 | `id_field` | Symbol | `:id` | Reference/upsert: the key read inside the `from` section **and** the `find_by` column — replaces `field` |
-| `allowing` | various | `nil` | What the param accepts — meaning set by its `type`: scope (reference), list (`:enumerated`), validator (`:custom`), frame everywhere else — see below |
+| `allowing` | various | `nil` | What the param accepts — meaning set by its `type`: scope (reference), list (`:enumerated`), validator (`:custom`), frame on any other type or on none — see below |
 | `allowing …, message:` | String / Proc | `nil` | What a **frame's** refusal says, after "invalid value for field x" |
 | `with` | class, lambda | `nil` | Sub-mapper (+ optional context lambda) for an `association` built/upserted via `accepts_nested_attributes_for` |
 | `many:` | Bool | `false` | `association` cardinality — `true` ⇒ 1‑N (kwarg on `association`) |
@@ -330,8 +330,9 @@ which is what separates it from a `type :custom` validator.
 
 **A declared `allowing` always runs.** Nothing silently ignores it: if its type does not read it, it
 frames. What keeps it from running is never the declaration, only the mapping — nothing lands (absent
-key, blank value, a null skipped for want of `nullable`) or something already refused the field
-(`required`, `nullable false`, `authorize`, the type's own format check).
+key without `default`, blank value, a null skipped for want of `nullable`), `map_if` skipped the
+param, or something already refused the field (`required`, `nullable false`, `authorize` on a value
+the caller sent or cleared, the type's own format check).
 
 ```ruby
 attribute :workshop_enabled do
@@ -350,8 +351,15 @@ end
 - A falsy answer refuses the field with an `InvalidValueError` keyed on its payload path (`from`
   included), so the rule never has to know the path it guards. A truthy answer leaves the cast value
   as it is — whatever the rule returned.
-- A frame declared as a plain value answers by inclusion (`allowing [1, 2, 3]`), like an
-  `:enumerated` list.
+- A frame answers by **inclusion** whenever it is a list rather than a verdict — declared as one
+  (`allowing [1, 2, 3]`) or returned by the rule. So the scope idiom written next to a scalar type,
+  `allowing -> { Category.enabled }`, keeps constraining instead of reading as a plain truthy
+  "accepted": a Relation that holds no such value refuses it. (A String is never a list: its
+  `include?` matches a substring, which is never what a rule means.)
+- A frame the mapper could not call — `allowing true`, `allowing :a_method_name`, a rule demanding
+  more than `(value, source_params)` or a required keyword — raises a `ConfigurationError` at the
+  first mapping rather than on every request, as `authorize` refuses its own shape. The types that
+  read `allowing` for themselves accept shapes of their own and are not checked.
 - **`message:` says why.** An `:enumerated` names its list and a reference names its scope, because
   the gem knows them; a frame's reason is known only to the rule, so without `message` the caller
   reads the bare *"Invalid value for field workshop"*. A String is taken as is; a **Proc** is
@@ -380,20 +388,27 @@ end
 - Nothing is assigned before the validation loop ends, so the rule reads the record's **previous**
   value (its associations included): a rule about a transition (`true` ⇒ `false`) can be written on
   the attribute it constrains.
-- `false` is weighed like any other value. On a framed param it first goes through the declared type,
-  so a `type :integer` handed `false` answers with its own format error; on a param with no frame it
-  is still assigned as sent and left to the column's own cast.
+- `false` is weighed like any other value, on **any** param that declares an `allowing`: it goes
+  through the declared type first, so an `:enumerated` consults its list instead of skipping it (and
+  a `type :integer` handed `false` answers with its own format error, a `type :string` casts it to
+  `"false"`). A param that declares no constraint still takes `false` as sent, left to the column's
+  own cast.
 - A **clearing request** is a value the caller asked to write, so it is framed too: under
-  `nullable true` the rule is handed the `nil` that is about to land, and `allowing [true, false]`
-  refuses the null it does not list where `allowing [true, false, nil]` accepts it. `nullable false`
-  refuses the null before the rule, and an undeclared `nullable` skips it — nothing lands, nothing is
-  weighed. Write a rule that answers for `nil` whenever the param is `nullable true`.
+  `nullable true` the rule is handed what is about to land — `nil`, or `[]` on a multi-valued param
+  (`multiple true`) — and `allowing [true, false]` refuses the null it does not list where
+  `allowing [true, false, nil]` accepts it. `nullable false` refuses the null before the rule, and an
+  undeclared `nullable` skips it — nothing lands, nothing is weighed. Write a rule that answers for
+  `nil` whenever the param is `nullable true`.
 - On a `type :array` the rule weighs elements, so an emptied list (`[]`, a clearing) has none to
   weigh: what governs it there is `nullable`. A refused element carries the `message` under its own
   indexed path (`numbers.1`).
-- A blank value that writes nothing (absent key, `""`, a skipped null) never reaches the frame.
+- A blank value that writes nothing (absent key, `""`, a skipped null) never reaches the frame — but
+  the `default` that replaces it does, plain `default` and `default_on_invalid` alike. What is
+  weighed is what lands, wherever it comes from.
 - `default_on_invalid true` answers for a value the **type** could not read, not for one the rule
-  refused: a frame refusal stays a refusal, and the `default` that does land is itself framed.
+  refused: a frame refusal stays a refusal.
+- `assign false` changes nothing: a validation-only param is framed like any other, and its refusal
+  fails the mapping.
 
 ### `required`
 

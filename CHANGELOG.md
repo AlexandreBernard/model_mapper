@@ -34,8 +34,21 @@ of in a `before_assignation` hook far from it. The rule goes through the one rul
 `(value, source_params)` as its signature accepts, so it reads the `record_alias`, the keyword
 context and the params already mapped, by name. Nothing is assigned before the validation loop ends,
 so what it reads on the record is still the **previous** value — a rule about a transition
-(`true` ⇒ `false`) is writable. A frame declared as a plain value answers by inclusion
-(`allowing [1, 2, 3]`), like an `:enumerated` list.
+(`true` ⇒ `false`) is writable.
+
+A frame answers by inclusion whenever it is a list rather than a verdict, declared as one
+(`allowing [1, 2, 3]`, like an `:enumerated`) or returned by the rule: the scope idiom
+`allowing -> { Category.enabled }` written next to a scalar type keeps constraining, where a Relation
+read as a plain truthy "accepted" would wave every value through on a field the declaration says is
+constrained. A frame the mapper could not call at all — `allowing true`, `allowing :a_method_name`, a
+rule demanding more than `(value, source_params)` or a required keyword — raises a
+`ConfigurationError` at the first mapping rather than on every request, the same choice `authorize`
+makes about its own shape. The types that read `allowing` for themselves accept shapes of their own
+and are not checked.
+
+A frame is weighed after `authorize`, a clearing included: a field the caller may not write is never
+evaluated, and the rule's `message` is never disclosed to them. Malformed bytes never reach a rule,
+on an untyped param as on any other (`reject_invalid_encoding!`).
 
 A frame's refusal can carry its reason. An `:enumerated` names its list and a reference names its
 scope because the gem knows them; why a frame said no is known only to the rule, so `allowing` takes
@@ -71,14 +84,20 @@ element (`numbers.2`).
 
 ### Changed
 
-`false` now reaches the declared type validator — but only on a param that declares an `allowing`,
-which is what the frame needs to weigh the value the record would hold. Everywhere else the
-validation loop still leaves a falsy value alone, so a `false` sent to a `type :integer` keeps being
-assigned as sent and cast by the column (to `0`) rather than becoming an `InvalidFormatError`.
-Running the validator on every `false` would be more correct — a `false` is not an integer, nor a
-date, nor a float — but it changes the answer of every mapper of every application, so it is left as
-a possible later evolution rather than folded into this fix. On a framed param it is already the
-behaviour: the declared type governs.
+`false` now reaches the declared type validator on every param that declares an `allowing` — where a
+constraint was written, the value is weighed, and `false` only reaches the constraint through the
+validator. On a framed param that is what the frame needs; on a type that reads `allowing` for
+itself, it is a list that used to be skipped: `type :enumerated` + `allowing %w[open closed]` given
+`false` consulted nothing and assigned it as sent (a string column stored `"f"`), and now refuses it.
+A reference or a `:referential` likewise refuses it as an identifier rather than assigning it, and a
+`:custom` validator runs on it like on any other value. A framed `type :string` casts it to
+`"false"`, where the raw `false` used to be left to the column.
+
+A param that declares no `allowing` is untouched: a `false` sent to a bare `type :integer` keeps
+being assigned as sent and cast by the column (to `0`) rather than becoming an `InvalidFormatError`.
+Running the validator on every `false` would be more correct still — a `false` is not an integer, nor
+a date, nor a float — but it changes the answer of mappers that never declared any constraint, so it
+is left as a possible later evolution rather than folded into this fix.
 
 ## 0.5.0
 
