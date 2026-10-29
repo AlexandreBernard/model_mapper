@@ -959,7 +959,10 @@ module ModelMapper
   # the value. A Proc gets as many of `(value, source_params)` as its signature accepts, through the
   # one rule dispatch, so it is `instance_exec`ed on the mapper and reads the record alias and the
   # context by name; anything else answers by inclusion, as an `:enumerated` list does. A falsy answer
-  # refuses the field BY NAME: the rule never has to know the payload path it guards.
+  # refuses the field BY NAME: the rule never has to know the payload path it guards. What it does know
+  # is WHY, which the gem cannot: `allowing …, message:` carries that reason into the error, resolved
+  # here so a Proc is called on refusal only — and with the value, so one rule can give a different
+  # reason per case.
   def frame_value!(value, param_config, source_params)
     rule = param_config.allowing_value
     rule = rule.to_proc if rule.is_a?(Method)
@@ -971,7 +974,9 @@ module ModelMapper
       end
     return if accepted
 
-    raise ModelMapper::InvalidValueError.new(param_config.keys.join('.'))
+    details = ModelMapper::ParamConfig.call_rule(param_config.allowing_message_value, self,
+                                                 [value, source_params])
+    raise ModelMapper::InvalidValueError.new(param_config.keys.join('.'), details:)
   end
 
   # An invalidly encoded string (`"\xFF"`, which `JSON.parse` lets through) is malformed whatever the

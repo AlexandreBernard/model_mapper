@@ -293,6 +293,7 @@ to `association` (`nullable:` and `immediate_write:` are also accepted as keywor
 | `from` | `*keys` | `[name]` | Key path for `Hash#dig` into the source params (the section, for an association) — was `at` |
 | `id_field` | Symbol | `:id` | Reference/upsert: the key read inside the `from` section **and** the `find_by` column — replaces `field` |
 | `allowing` | various | `nil` | What the param accepts — meaning set by its `type`: scope (reference), list (`:enumerated`), validator (`:custom`), frame everywhere else — see below |
+| `allowing …, message:` | String / Proc | `nil` | What a **frame's** refusal says, after "invalid value for field x" |
 | `with` | class, lambda | `nil` | Sub-mapper (+ optional context lambda) for an `association` built/upserted via `accepts_nested_attributes_for` |
 | `many:` | Bool | `false` | `association` cardinality — `true` ⇒ 1‑N (kwarg on `association`) |
 | `map_if` | Proc | `nil` | Block method controlling whether the attribute/association is processed — replaces `condition` |
@@ -351,6 +352,31 @@ end
   as it is — whatever the rule returned.
 - A frame declared as a plain value answers by inclusion (`allowing [1, 2, 3]`), like an
   `:enumerated` list.
+- **`message:` says why.** An `:enumerated` names its list and a reference names its scope, because
+  the gem knows them; a frame's reason is known only to the rule, so without `message` the caller
+  reads the bare *"Invalid value for field workshop"*. A String is taken as is; a **Proc** is
+  resolved on refusal only, with the same `(value, source_params)` as the rule, and how one rule
+  gives a different reason per case. It is **appended** to that generic sentence — it does not
+  replace it, the field name stays — and lands in `InvalidValueError#details`.
+
+  **Use a Proc for anything translated.** A String is evaluated once, where it is written: an
+  `I18n.t` in a class body freezes the locale of whoever loaded the class. A Proc is called per
+  refusal, inside the request.
+
+  ```ruby
+  attribute :workshop_enabled do
+    from :workshop
+    type :boolean
+    nullable true
+    allowing ->(value) { value || support? },
+             message: ->(value) { I18n.t(value.nil? ? 'errors.cannot_clear' : 'errors.support_only') }
+  end
+  # => "Invalid value for field workshop: giving the module up is reserved to the support."
+  ```
+
+  A child that redeclares `allowing` brings its own `message` or none: it travels with the rule,
+  never with the field. The types that read `allowing` for themselves name their own refusal
+  and ignore it.
 - Nothing is assigned before the validation loop ends, so the rule reads the record's **previous**
   value (its associations included): a rule about a transition (`true` ⇒ `false`) can be written on
   the attribute it constrains.
@@ -363,7 +389,8 @@ end
   refuses the null before the rule, and an undeclared `nullable` skips it — nothing lands, nothing is
   weighed. Write a rule that answers for `nil` whenever the param is `nullable true`.
 - On a `type :array` the rule weighs elements, so an emptied list (`[]`, a clearing) has none to
-  weigh: what governs it there is `nullable`.
+  weigh: what governs it there is `nullable`. A refused element carries the `message` under its own
+  indexed path (`numbers.1`).
 - A blank value that writes nothing (absent key, `""`, a skipped null) never reaches the frame.
 - `default_on_invalid true` answers for a value the **type** could not read, not for one the rule
   refused: a frame refusal stays a refusal, and the `default` that does land is itself framed.

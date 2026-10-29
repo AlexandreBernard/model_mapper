@@ -52,9 +52,10 @@ module ModelMapper
     end
 
     attr_reader :name
-    attr_accessor :at_keys, :type_value, :field_value, :allowing_value, :required_value, :multiple_value, :assign_value,
-                  :default_value, :default_on_invalid_value, :condition_value, :mapper_value, :with_value, :of_value,
-                  :nullable_value, :immediate_write_value, :authorize_value, :default_authorize_value
+    attr_accessor :at_keys, :type_value, :field_value, :allowing_value, :allowing_message_value, :required_value,
+                  :multiple_value, :assign_value, :default_value, :default_on_invalid_value, :condition_value,
+                  :mapper_value, :with_value, :of_value, :nullable_value, :immediate_write_value, :authorize_value,
+                  :default_authorize_value
 
     def initialize(name)
       @name = name
@@ -62,6 +63,7 @@ module ModelMapper
       @type_value = nil
       @field_value = :id
       @allowing_value = nil
+      @allowing_message_value = nil
       @required_value = false
       @multiple_value = false
       @assign_value = true
@@ -123,8 +125,19 @@ module ModelMapper
     #   allowing -> { Zone.enabled }                       # reference — the scope
     #   allowing ->(value, _source) { value.upcase }       # :custom — the value it returns
     #   allowing ->(value, _source) { value || support? }  # :boolean — a frame: yes or no
-    def allowing(value)
+    #
+    # `message` is what a FRAME's refusal says, appended to the generic "invalid value for field x" the
+    # way an `:enumerated` appends its list: the gem knows the field, only the rule knows why it said
+    # no, so without it the caller reads the bare generic sentence. A String is taken as is, a Proc is
+    # called on refusal only, with the same `(value, source_params)` as the rule — which is how it gets
+    # translated at request time rather than frozen at class load, and how one rule gives a different
+    # reason per case. It lands in InvalidValueError#details. The types that read `allowing` for
+    # themselves name their own refusal, so they ignore it.
+    #   allowing ->(value) { value || support? },
+    #            message: -> { I18n.t('errors.subscription.support_only') }
+    def allowing(value, message: nil)
       @allowing_value = value
+      @allowing_message_value = message unless message.nil?
     end
 
     def required(value)
@@ -258,7 +271,13 @@ module ModelMapper
       @at_keys = other.at_keys if other.at_keys
       @type_value = other.type_value if other.type_value
       @field_value = other.field_value if other.field_value != :id || other.explicitly_set?(:field_value)
-      @allowing_value = other.allowing_value if other.allowing_value
+      # The message travels with the rule: a child that redeclares `allowing` brings its own `message`
+      # or none, instead of inheriting a reason written for the rule it just replaced. A child that
+      # says nothing about `allowing` keeps both.
+      if other.allowing_value
+        @allowing_value = other.allowing_value
+        @allowing_message_value = other.allowing_message_value
+      end
       @required_value = other.required_value if other.explicitly_set?(:required_value)
       @multiple_value = other.multiple_value if other.explicitly_set?(:multiple_value)
       @assign_value = other.assign_value if other.explicitly_set?(:assign_value)
@@ -285,6 +304,7 @@ module ModelMapper
       copy.type_value = @type_value
       copy.field_value = @field_value
       copy.allowing_value = @allowing_value
+      copy.allowing_message_value = @allowing_message_value
       copy.required_value = @required_value
       copy.multiple_value = @multiple_value
       copy.assign_value = @assign_value

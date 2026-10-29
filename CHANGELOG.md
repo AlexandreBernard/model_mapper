@@ -37,6 +37,21 @@ so what it reads on the record is still the **previous** value — a rule about 
 (`true` ⇒ `false`) is writable. A frame declared as a plain value answers by inclusion
 (`allowing [1, 2, 3]`), like an `:enumerated` list.
 
+A frame's refusal can carry its reason. An `:enumerated` names its list and a reference names its
+scope because the gem knows them; why a frame said no is known only to the rule, so `allowing` takes
+a `message:` — a String, or a Proc resolved on refusal only and handed the same
+`(value, source_params)` as the rule, so one rule can give a different reason per case. It is
+appended to the generic "invalid value for field x", which is all the caller reads without it, and
+lands in `InvalidValueError#details`. Anything translated belongs in a Proc: a String is evaluated
+where it is written, so an `I18n.t` in a class body freezes the locale of whoever loaded the class. A
+child that redeclares `allowing` brings its own `message` or none: it travels with the rule, not with
+the field.
+
+```ruby
+allowing ->(value) { value || support? },
+         message: ->(value) { I18n.t(value.nil? ? 'errors.cannot_clear' : 'errors.support_only') }
+```
+
 What the rule weighs is what is about to be written: the cast payload value, the value as sent when
 no `type` casts it, the `default` that replaced an invalid one — and the **clearing** a caller asked
 for. Under `nullable true` the rule is handed the `nil` that is about to land, so

@@ -254,10 +254,59 @@ class AllowingDefaultOnInvalidMapper
 
 end
 
+# `message` says WHY the rule refused, which the gem cannot know on its own. A String is taken as is;
+# a Proc is resolved on refusal only, with the same arguments as the rule.
+class AllowingMessageMapper
+
+  include ModelMapper
+
+  class << self
+
+    attr_accessor :message_calls
+
+  end
+
+  map_model do
+    attribute :name do
+      type :string
+      allowing ->(value) { value.start_with?('ok-') }, message: 'the name must be prefixed.'
+    end
+
+    attribute :active do
+      type :boolean
+      nullable true
+      allowing ->(value) { value },
+               message: lambda { |value|
+                 self.class.message_calls += 1
+                 value.nil? ? 'the module cannot be cleared here.' : 'giving the module up is reserved to the support.'
+               }
+    end
+
+    attribute :numbers do
+      type :array
+      of :integer
+      allowing ->(value) { value.odd? }, message: 'every number must be odd.'
+    end
+  end
+
+end
+
+# A child that redeclares the rule brings its own message, or none.
+class AllowingMessageChildMapper < AllowingMessageMapper
+
+  map_model do
+    attribute :name do
+      allowing ->(value) { value.end_with?('-ok') }
+    end
+  end
+
+end
+
 class TestAllowing < Minitest::Test
 
   def setup
     AllowingCountingMapper.calls = []
+    AllowingMessageMapper.message_calls = 0
   end
 
   # --- The frame itself --------------------------------------------------------------------------
@@ -477,6 +526,44 @@ class TestAllowing < Minitest::Test
 
     assert_equal ['quantity'], mapper.errors.keys
     assert_instance_of ModelMapper::InvalidFormatError, mapper.errors['quantity']
+  end
+
+  # --- Refusal message ---------------------------------------------------------------------------
+
+  def test_a_string_message_is_carried_into_the_error
+    mapper = AllowingMessageMapper.map_to_model(Widget.new, { name: 'ko-bolt' })
+    error  = mapper.errors['name']
+
+    assert_equal 'the name must be prefixed.', error.details
+    assert_equal 'Invalid value for field name: the name must be prefixed.', error.message
+  end
+
+  def test_a_proc_message_answers_on_the_refused_value
+    widget = Widget.create!(name: 'ok-bolt', active: true)
+    refused_false = AllowingMessageMapper.map_to_model(Widget.new, { active: false })
+    refused_null  = AllowingMessageMapper.map_to_model(widget, { active: nil })
+
+    assert_equal 'giving the module up is reserved to the support.', refused_false.errors['active'].details
+    assert_equal 'the module cannot be cleared here.', refused_null.errors['active'].details
+  end
+
+  def test_the_message_is_resolved_only_when_the_rule_refuses
+    AllowingMessageMapper.map_to_model(Widget.new, { active: true })
+
+    assert_equal 0, AllowingMessageMapper.message_calls
+  end
+
+  def test_an_element_refusal_carries_both_its_index_and_its_reason
+    error = AllowingMessageMapper.map_to_model(Widget.new, { numbers: %w[1 2] }).errors['numbers.1']
+
+    assert_equal 'every number must be odd.', error.details
+  end
+
+  def test_a_child_redeclaring_the_rule_drops_the_message_written_for_it
+    mapper = AllowingMessageChildMapper.map_to_model(Widget.new, { name: 'ko-bolt' })
+
+    assert_equal ['name'], mapper.errors.keys
+    assert_nil mapper.errors['name'].details
   end
 
   # --- Without a type ----------------------------------------------------------------------------
