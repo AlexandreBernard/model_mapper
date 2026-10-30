@@ -1130,14 +1130,14 @@ class TestAssociation < Minitest::Test
     assert_includes mapper.errors.keys, 'parts.0.id'
   end
 
-  # A list element is read as a bare value by `reference_id`, and would otherwise attach the matched
-  # record and then run the sub-mapper with an Array as its params.
+  # A list element would otherwise be read as a bare value by `reference_id`, attach the matched record
+  # and then run the sub-mapper with an Array as its params: it is refused as a malformed element first.
   def test_upsert_rejects_a_list_element
     part   = Part.create!(name: 'allowed')
     mapper = UpsertPartsMapper.map_to_model(Widget.new, { parts: [[part.id]] })
 
     refute_predicate mapper, :valid?
-    assert_includes mapper.errors.keys, 'parts.0.id'
+    assert_equal ['parts.0'], mapper.errors.keys
   end
 
   # Same reasons as the reference path, recorded instead of raised.

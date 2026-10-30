@@ -815,7 +815,7 @@ class TestAuthorize < Minitest::Test
     mapper = AuthzMalformedSectionMapper.map_to_model(Widget.new, { info: 'oops' })
 
     assert_includes mapper.errors.keys, 'quantity'
-    assert_includes mapper.errors.keys, 'info.name'
+    assert_includes mapper.errors.keys, 'info'
   end
 
   # A rule is user code like `allowing` or `required`: when it trips over an earlier failure, the

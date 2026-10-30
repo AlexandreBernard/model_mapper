@@ -673,10 +673,19 @@ module ModelMapper
 
       # Only a truly absent section is skipped; a present-but-empty `{}` is built and validated (its
       # required sub-fields then surface), and an empty array simply yields zero records.
-      _, sub_source = read_path(source_params, param_config.keys)
+      begin
+        _, sub_source = read_path(source_params, param_config.keys)
+      rescue ModelMapper::InvalidFormatError => e
+        validation_errors[e.field] = e
+        next
+      end
       next if sub_source.nil?
       # An empty list builds zero records — no write, so nothing to weigh either.
       next if param_config.collection? && sub_source.respond_to?(:empty?) && sub_source.empty?
+
+      shape_errors = association_shape_errors(param_config, sub_source)
+      shape_errors.each { |error| validation_errors[error.field] = error }
+      next if shape_errors.any?
 
       # The section is present, so this is a write the caller asked for: weigh the authorization
       # before building anything. Without this the option would be silently inert on every
@@ -1270,8 +1279,19 @@ module ModelMapper
   # The single read of a `from` path in the payload: [present, raw value]. Every level is read with
   # `read_key`, so a plain Hash answers to symbol and string keys alike, as an
   # ActionController::Parameters already does. Absent as soon as one level is missing or nil.
+  #
+  # A level below the root that carries a value where the path expects a section (`{ info: 'x' }`
+  # read through `from :info, :status`) is a malformed payload, refused with an InvalidFormatError
+  # naming the section — the caller then answers it like any other invalid field, instead of the
+  # TypeError Hash#dig would raise. The root is the mapper's own input, not a client value: a
+  # non-keyed root is a programming error and keeps raising TypeError.
+  # @raise [ModelMapper::InvalidFormatError] when a section of the path is not readable by key
   def read_path(source_params, keys)
-    keys.reduce([true, source_params]) do |(_, section), key|
+    keys.each_with_index.reduce([true, source_params]) do |(_, section), (key, depth)|
+      unless depth.zero? || readable_section?(section, key)
+        raise ModelMapper::InvalidFormatError.new(keys.first(depth).join('.'), expected_format: :object)
+      end
+
       present, value = read_key(section, key)
       break [false, nil] unless present
 
@@ -1281,7 +1301,8 @@ module ModelMapper
 
   # [present, value] of one key in a payload section, indifferent to symbol/string: the key as declared
   # wins, then its other form. A section that is not keyed (a list, a scalar) keeps Hash#dig's answer —
-  # a list digs by position and a scalar has no #dig — so a malformed payload still raises TypeError.
+  # a list digs by position and a scalar has no #dig, which raises TypeError. `read_path` refuses such
+  # a section before it gets here, everywhere but at the root.
   def read_key(section, key)
     return [false, nil] if section.nil?
 
@@ -1298,6 +1319,35 @@ module ModelMapper
                  end
     found = [key, other_form].compact.find { |candidate| section.key?(candidate) }
     found.nil? ? [false, nil] : [true, section[found]]
+  end
+
+  # Whether `key` can be read from `section`: an absent section (read as absent), a keyed one (a Hash,
+  # an ActionController::Parameters), a list indexed by position, or any other object that digs. A
+  # scalar, or a list read by name, is a value standing where a section belongs.
+  def readable_section?(section, key)
+    return true if section.nil?
+    return key.is_a?(Integer) if section.is_a?(Array)
+
+    section.respond_to?(:key?) || section.respond_to?(:dig)
+  end
+
+  # The shape errors of a sub-mapper's section: a single association expects an object, a collection a
+  # list of objects. A sub-mapper reads its section as its root, where a scalar raises TypeError, and a
+  # collection that is not a list has no elements to iterate — so the shape is checked here, every
+  # malformed element named by its index.
+  # @return [Array<ModelMapper::InvalidFormatError>] empty when the section has the expected shape
+  def association_shape_errors(param_config, sub_source)
+    path = param_config.keys.join('.')
+    unless param_config.collection?
+      return [] if sub_source.respond_to?(:key?)
+
+      return [ModelMapper::InvalidFormatError.new(path, expected_format: :object)]
+    end
+    return [ModelMapper::InvalidFormatError.new(path, expected_format: :array)] unless sub_source.is_a?(Array)
+
+    sub_source.each_with_index.filter_map do |item, index|
+      ModelMapper::InvalidFormatError.new("#{path}.#{index}", expected_format: :object) unless item.respond_to?(:key?)
+    end
   end
 
   def smart_presence(value)

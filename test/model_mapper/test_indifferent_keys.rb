@@ -86,14 +86,4 @@ class TestIndifferentKeys < Minitest::Test
     assert_equal 'Guide', widget.manual.title
   end
 
-  def test_a_scalar_where_a_section_is_expected_still_raises
-    klass = mapper do
-      attribute :status do
-        from :info, :status
-      end
-    end
-    assert_raises(TypeError) { klass.map_to_model(Widget.new, { info: 'x' }) }
-    assert_raises(TypeError) { klass.map_to_model(Widget.new, { info: [1] }) }
-  end
-
 end
