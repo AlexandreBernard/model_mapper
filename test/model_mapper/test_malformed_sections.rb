@@ -20,6 +20,18 @@ class MalformedSectionPartMapper
 
 end
 
+# A source that only digs, and hands its nested sections back wrapped the same way.
+class MalformedSectionDigOnlyParams
+
+  def initialize(hash) = @hash = hash
+
+  def dig(*keys)
+    value = @hash.dig(*keys)
+    value.is_a?(Hash) ? self.class.new(value) : value
+  end
+
+end
+
 # A value standing where the payload is expected to carry a section — a scalar or a list in the middle
 # of a `from` path, or as a sub-mapper's section — is refused as an InvalidFormatError naming that
 # section, whatever the other fields of the payload carry.
@@ -160,6 +172,40 @@ class TestMalformedSections < Minitest::Test
     assert_refused errors, 'parts.1', :object
     assert_refused errors, 'parts.2', :object
     refute errors.key?('parts.0')
+  end
+
+  def test_an_empty_string_or_object_for_a_collection_is_refused
+    klass = mapper do
+      association :parts_attributes, many: true do
+        from :parts
+        with MalformedSectionPartMapper
+      end
+    end
+    assert_refused klass.map_to_model(Widget.new, { parts: '' }).errors, 'parts', :array
+    assert_refused klass.map_to_model(Widget.new, { parts: {} }).errors, 'parts', :array
+  end
+
+  def test_a_nil_element_of_a_collection_is_refused
+    klass = mapper do
+      association :parts_attributes, many: true do
+        from :parts
+        with MalformedSectionPartMapper
+      end
+    end
+    assert_refused klass.map_to_model(Widget.new, { parts: [nil] }).errors, 'parts.0', :object
+  end
+
+  def test_a_section_that_only_digs_is_read_by_a_sub_mapper
+    klass = mapper do
+      association :manual_attributes do
+        from :manual
+        with MalformedSectionManualMapper
+      end
+    end
+    widget = Widget.new
+    mapper = klass.map_to_model(widget, MalformedSectionDigOnlyParams.new({ manual: { title: 'T' } }))
+    assert_empty mapper.errors
+    assert_equal 'T', widget.manual.title
   end
 
   def test_an_empty_collection_still_builds_nothing

@@ -112,22 +112,16 @@ class AuthzSplatMapper
 
 end
 
-# An earlier failing attribute switches `validate_param` to collecting mode, so a later malformed
-# section surfaces as an error instead of escaping — which is how the authorization check can be
-# shown not to be what raises.
+# A guarded field behind a section. The rule raises: weighing it on a payload whose section is
+# malformed would escape the non-raising entry point, since no other field has failed.
 class AuthzMalformedSectionMapper
 
   include ModelMapper
 
   map_model do
-    attribute :quantity do
-      type :integer
-      required true
-    end
-
     attribute :name do
       from :info, :name
-      authorize -> { false }
+      authorize -> { raise 'the rule must not be weighed' }
     end
   end
 
@@ -814,8 +808,8 @@ class TestAuthorize < Minitest::Test
   def test_malformed_section_does_not_raise_from_the_authorization_check
     mapper = AuthzMalformedSectionMapper.map_to_model(Widget.new, { info: 'oops' })
 
-    assert_includes mapper.errors.keys, 'quantity'
-    assert_includes mapper.errors.keys, 'info'
+    assert_equal ['info'], mapper.errors.keys
+    assert_kind_of ModelMapper::InvalidFormatError, mapper.errors['info']
   end
 
   # A rule is user code like `allowing` or `required`: when it trips over an earlier failure, the

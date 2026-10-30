@@ -680,8 +680,9 @@ module ModelMapper
         next
       end
       next if sub_source.nil?
-      # An empty list builds zero records — no write, so nothing to weigh either.
-      next if param_config.collection? && sub_source.respond_to?(:empty?) && sub_source.empty?
+      # An empty list builds zero records — no write, so nothing to weigh either. Only a list: an empty
+      # string or object where a list belongs is a malformed payload, refused below.
+      next if param_config.collection? && sub_source.is_a?(Array) && sub_source.empty?
 
       shape_errors = association_shape_errors(param_config, sub_source)
       shape_errors.each { |error| validation_errors[error.field] = error }
@@ -1328,7 +1329,13 @@ module ModelMapper
     return true if section.nil?
     return key.is_a?(Integer) if section.is_a?(Array)
 
-    section.respond_to?(:key?) || section.respond_to?(:dig)
+    keyed_section?(section)
+  end
+
+  # Whether `value` is a section read by key: a Hash, an ActionController::Parameters, or any other
+  # object that digs — the sources `read_key` accepts. A list digs by position, so it is not one.
+  def keyed_section?(value)
+    !value.is_a?(Array) && (value.respond_to?(:key?) || value.respond_to?(:dig))
   end
 
   # The shape errors of a sub-mapper's section: a single association expects an object, a collection a
@@ -1339,14 +1346,14 @@ module ModelMapper
   def association_shape_errors(param_config, sub_source)
     path = param_config.keys.join('.')
     unless param_config.collection?
-      return [] if sub_source.respond_to?(:key?)
+      return [] if keyed_section?(sub_source)
 
       return [ModelMapper::InvalidFormatError.new(path, expected_format: :object)]
     end
     return [ModelMapper::InvalidFormatError.new(path, expected_format: :array)] unless sub_source.is_a?(Array)
 
     sub_source.each_with_index.filter_map do |item, index|
-      ModelMapper::InvalidFormatError.new("#{path}.#{index}", expected_format: :object) unless item.respond_to?(:key?)
+      ModelMapper::InvalidFormatError.new("#{path}.#{index}", expected_format: :object) unless keyed_section?(item)
     end
   end
 

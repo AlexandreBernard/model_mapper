@@ -12,15 +12,22 @@ that section, instead of a `TypeError` escaping the mapper:
   level that is not a section is named (`info.detail` for `from :info, :detail, :status`), and the
   fields sharing it are refused once;
 - a scalar or a list as a sub-mapper's section → `InvalidFormatError` on the section, `:object`;
-- a collection that is not a list → `InvalidFormatError` on the section, `:array`; every element
-  that is not an object → one error per element, named by its index (`parts.1`).
+- a collection that is not a list → `InvalidFormatError` on the section, `:array` — an empty string
+  or an empty object included, which used to be skipped as an empty list; every element that is not
+  an object → one error per element, named by its index (`parts.1`).
 
 The `TypeError` used to escape `map_to_model` and `map_to_model!` alike — or, when another field had
 already failed, to be recorded as an `InvalidValueError` on the leaf (`info.status`) carrying Ruby's
-message: the same payload got two different answers depending on the rest of it. Both cases now
-answer the same. An absent or `nil` section is still absent, an empty collection still builds
-nothing, and a mapper given a non-keyed root still raises `TypeError`: the root is the caller's own
-input, not a client value.
+message: the same payload got two different answers depending on the rest of it. The mapper's own
+reads now answer the same; a `map_if`, `required` or `allowing` lambda that digs into a malformed
+section itself still raises from that lambda. An absent or `nil` section is still absent, an empty
+list still builds nothing, and a mapper given a non-keyed root still raises `TypeError`: the root is
+the caller's own input, not a client value.
+
+Two payloads accepted before are now refused, on the element's index: a `nil` element of a
+collection (`parts: [nil]`, which built an empty record), and a bare id in an upsert collection
+whose sub-mapper reads nothing at its root (`parts: [3]`, which attached the record) — any
+sub-mapper that reads an attribute raised `TypeError` on it.
 
 ## 0.5.0
 
