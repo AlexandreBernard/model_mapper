@@ -342,8 +342,8 @@ class AllowingEncodingMapper
 
 end
 
-# The scope idiom written next to a scalar type: the rule answers with a LIST, not with a verdict.
-class AllowingScopeRuleMapper
+# A rule that answers with a LIST rather than with a verdict.
+class AllowingListRuleMapper
 
   include ModelMapper
 
@@ -353,9 +353,51 @@ class AllowingScopeRuleMapper
       allowing -> { [1, 2, 3] }
     end
 
+    # A Hash is not a list: its `include?` matches a KEY, which is never what a rule means, so it
+    # answers for its own truthiness like any other object.
+    attribute :code do
+      type :string
+      allowing ->(_value) { { 'other' => true } }
+    end
+  end
+
+end
+
+# An ActiveRecord scope answers which RECORDS are allowed — a reference's question, not a frame's.
+class AllowingScopeRuleMapper
+
+  include ModelMapper
+
+  map_model do
     attribute :category_id do
       type :integer
       allowing -> { Category.enabled }
+    end
+  end
+
+end
+
+# `authorize` settles the right to write the field before the rule weighs the value — for a `default`
+# that lands as for anything else, or the rule's `message` would reach a caller refused on the field.
+class AllowingAuthorizedDefaultMapper
+
+  include ModelMapper
+
+  class << self
+
+    attr_accessor :rule_calls
+
+  end
+
+  map_model do
+    attribute :quantity do
+      type :integer
+      default 99
+      authorize ->(_value) { false }
+      allowing lambda { |value|
+        self.class.rule_calls += 1
+        value < 10
+      }, message: 'internal policy: quota for plan X'
     end
   end
 
@@ -431,6 +473,7 @@ class TestAllowing < Minitest::Test
     AllowingCountingMapper.calls = []
     AllowingMessageMapper.message_calls = 0
     AllowingAuthorizedMapper.rule_calls = 0
+    AllowingAuthorizedDefaultMapper.rule_calls = 0
   end
 
   # --- The frame itself --------------------------------------------------------------------------
@@ -744,18 +787,54 @@ class TestAllowing < Minitest::Test
   # --- Rule shapes ---------------------------------------------------------------------------------
 
   def test_a_rule_that_answers_with_a_list_is_read_by_inclusion
-    accepted = AllowingScopeRuleMapper.map_to_model(Widget.new, { quantity: '2' })
-    refused  = AllowingScopeRuleMapper.map_to_model(Widget.new, { quantity: '9' })
+    accepted = AllowingListRuleMapper.map_to_model(Widget.new, { quantity: '2' })
+    refused  = AllowingListRuleMapper.map_to_model(Widget.new, { quantity: '9' })
 
     assert_predicate accepted, :valid?
+    assert_equal 2, accepted.record.quantity
     assert_equal ['quantity'], refused.errors.keys
   end
 
-  def test_a_rule_that_answers_with_a_scope_does_not_wave_everything_through
-    # A Relation read as a plain truthy answer would accept any value on a field declared constrained.
-    mapper = AllowingScopeRuleMapper.map_to_model(Widget.new, { category_id: '999999' })
+  def test_a_hash_answer_is_not_matched_on_its_keys
+    mapper = AllowingListRuleMapper.map_to_model(Widget.new, { code: 'anything' })
 
-    assert_equal ['category_id'], mapper.errors.keys
+    assert_predicate mapper, :valid?
+  end
+
+  def test_a_rule_that_answers_with_a_scope_is_refused_where_it_is_written
+    # A Relation only ever contains records, so it would refuse every scalar value — the valid ones
+    # included. The answer is only known at request time, so the refusal is too.
+    category = Category.create!(name: "scope-#{SecureRandom.hex(4)}")
+
+    error = assert_raises(ModelMapper::ConfigurationError) do
+      AllowingScopeRuleMapper.map_to_model(Widget.new, { category_id: category.id.to_s })
+    end
+
+    assert_match(/cannot answer with an ActiveRecord scope/, error.message)
+  end
+
+  def test_a_scope_declared_as_a_frame_is_refused_at_declaration
+    mapper = Class.new do
+      include ModelMapper
+      map_model do
+        attribute :category_id do
+          type :integer
+          allowing Category.enabled
+        end
+      end
+    end
+
+    error = assert_raises(ModelMapper::ConfigurationError) { mapper.map_to_model(Widget.new, {}) }
+
+    assert_match(/cannot answer with an ActiveRecord scope/, error.message)
+  end
+
+  def test_an_unauthorized_default_is_refused_before_the_rule_weighs_it
+    mapper = AllowingAuthorizedDefaultMapper.map_to_model(Widget.new, {})
+
+    assert_instance_of ModelMapper::UnauthorizedFieldError, mapper.errors['quantity']
+    assert_equal 0, AllowingAuthorizedDefaultMapper.rule_calls
+    assert_nil mapper.record.quantity
   end
 
   def test_a_method_message_is_resolved_like_a_proc

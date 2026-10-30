@@ -347,12 +347,19 @@ module ModelMapper
           next
         end
 
-        # A clearing is a value the caller asked to write, so a frame weighs it like any other: the
-        # rule is handed what lands — nil, or [] for a multi-valued param — and `allowing [true,
-        # false]` refuses the null it does not list, while `nullable false` refuses it earlier. Weighed
-        # after the authorization, as a sent value is: a field the caller may not write is never
-        # evaluated, and the rule's `message` is never disclosed to them.
-        frame_value!(value, param_config, source_params) if cleared && param_config.allowing_frames?
+        # The frame weighs what is about to be written, whatever produced it: the cast payload value,
+        # the value as sent when no type casts it, the `default` that replaced a missing or unreadable
+        # one, or the clearing the caller asked for (nil, or [] for a multi-valued param — so
+        # `allowing [true, false]` refuses the null it does not list, while `nullable false` refuses
+        # it earlier). Weighed only once the authorization has passed, whichever of the three it is: a
+        # field the caller may not write is never evaluated, and the rule's `message` — which may
+        # spell out an internal policy — is never disclosed to them.
+        if (cleared || !value.nil?) && param_config.allowing_frames?
+          # A value no type validator read (an untyped param) reaches a user lambda here without ever
+          # having been checked, and malformed bytes must not (see reject_invalid_encoding!).
+          reject_invalid_encoding!(value, param_config.keys.join('.'))
+          frame_value!(value, param_config, source_params)
+        end
       rescue ModelMapper::InvalidValueError, ModelMapper::InvalidFormatError => e
         validation_errors[e.field] = e
         errored_fields << param_name.to_s
@@ -935,17 +942,6 @@ module ModelMapper
         end
     end
 
-    # The frame weighs what is about to be written, whatever produced it — the cast payload value,
-    # the value as sent when no type casts it, or the `default` that replaced an invalid one. Outside
-    # the rescue above on purpose: `default_on_invalid` answers for a value the TYPE could not read,
-    # not for one the rule refused, and the default it lands is itself weighed.
-    if !value.nil? && param_config.allowing_frames?
-      # A value no type validator read reaches a user lambda here without ever having been checked,
-      # and malformed bytes must not (see reject_invalid_encoding!). Checking it twice costs a scan.
-      reject_invalid_encoding!(value, keys.join('.'))
-      frame_value!(value, param_config, source_params)
-    end
-
     [value, landed_default]
   end
 
@@ -973,10 +969,14 @@ module ModelMapper
   # reason per case.
   def frame_value!(value, param_config, source_params)
     answer = resolve_rule(param_config.allowing_value, value, source_params)
+    # An ActiveRecord scope answers a reference's question, not a frame's, and would refuse every
+    # scalar value — including the valid ones. Refused where it is written rather than silently.
+    if ModelMapper::ParamConfig.scope_rule?(answer)
+      raise ModelMapper::ConfigurationError, ModelMapper::ParamConfig.scope_rule_error(param_config.name)
+    end
+
     # A LIST answers by inclusion rather than by its own truthiness, declared as one (`allowing
-    # [1, 2, 3]`) or returned by the rule — the scope idiom `allowing -> { Category.enabled }` written
-    # next to a scalar type returns a Relation, which read as a plain "accepted" would wave every
-    # value through on a field the declaration says is constrained.
+    # [1, 2, 3]`) or returned by the rule; any other truthy answer means "accepted".
     accepted = ModelMapper::ParamConfig.list_rule?(answer) ? answer.include?(value) : answer
     return if accepted
 

@@ -37,10 +37,14 @@ so what it reads on the record is still the **previous** value — a rule about 
 (`true` ⇒ `false`) is writable.
 
 A frame answers by inclusion whenever it is a list rather than a verdict, declared as one
-(`allowing [1, 2, 3]`, like an `:enumerated`) or returned by the rule: the scope idiom
-`allowing -> { Category.enabled }` written next to a scalar type keeps constraining, where a Relation
-read as a plain truthy "accepted" would wave every value through on a field the declaration says is
-constrained. A frame the mapper could not call at all — `allowing true`, `allowing :a_method_name`, a
+(`allowing [1, 2, 3]`, like an `:enumerated`) or returned by the rule. A String is not a list (its
+`include?` matches a substring) and neither is a Hash (its `include?` matches a key); any other
+truthy answer means "accepted". An ActiveRecord SCOPE is refused rather than read as either:
+`allowing -> { Category.enabled }` written next to a scalar type names the allowed RECORDS, which is
+a reference's question — `Relation#include?` matches a record and nothing else, so every scalar
+value would be refused, the valid ones included. It raises a `ConfigurationError` naming the two ways
+to say what was meant: `association :category do allowing … end` to resolve the record, or
+`.pluck(:id)` to answer with a list of ids. A frame the mapper could not call at all — `allowing true`, `allowing :a_method_name`, a
 rule demanding more than `(value, source_params)` or a required keyword — raises a
 `ConfigurationError` at the first mapping rather than on every request, the same choice `authorize`
 makes about its own shape. The types that read `allowing` for themselves accept shapes of their own
@@ -75,7 +79,8 @@ before the rule and an undeclared `nullable` skips it, so nothing is weighed in 
 refused: a frame refusal stays a refusal, and the default that lands is itself framed.
 
 `:enumerated`, `:custom`, `:referential` and the `association` modes keep reading `allowing` for
-themselves, unchanged.
+themselves, and how they read it does not change — but they now receive one value they never did,
+see `Changed` below.
 
 On a `type :array`, `allowing` keeps applying to the element type `of` names — a scope for
 `of :enumerated` / `of :referential`, as before, and now a frame for every other `of` (a scalar one,
@@ -92,6 +97,13 @@ itself, it is a list that used to be skipped: `type :enumerated` + `allowing %w[
 A reference or a `:referential` likewise refuses it as an identifier rather than assigning it, and a
 `:custom` validator runs on it like on any other value. A framed `type :string` casts it to
 `"false"`, where the raw `false` used to be left to the column.
+
+**`type :custom` is the one to check before upgrading**: its validator is a lambda that never saw
+`false` and now does. `attribute(:code) { type :custom; allowing ->(v, _s) { v.upcase } }` given
+`{ code: false }` assigned `false` on 0.5.0 (a string column stored `"f"`); it now raises
+`NoMethodError` out of the non-raising `map_to_model` — a 500 for a payload that used to map. Every
+`type :custom` lambda must answer for `false`. On a `:referential` the same change is a fix:
+`{ category_id: false }` used to write `category_id = 0`, and is now refused.
 
 A param that declares no `allowing` is untouched: a `false` sent to a bare `type :integer` keeps
 being assigned as sent and cast by the column (to `0`) rather than becoming an `InvalidFormatError`.

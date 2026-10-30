@@ -352,10 +352,14 @@ end
   included), so the rule never has to know the path it guards. A truthy answer leaves the cast value
   as it is — whatever the rule returned.
 - A frame answers by **inclusion** whenever it is a list rather than a verdict — declared as one
-  (`allowing [1, 2, 3]`) or returned by the rule. So the scope idiom written next to a scalar type,
-  `allowing -> { Category.enabled }`, keeps constraining instead of reading as a plain truthy
-  "accepted": a Relation that holds no such value refuses it. (A String is never a list: its
-  `include?` matches a substring, which is never what a rule means.)
+  (`allowing [1, 2, 3]`) or returned by the rule. A String is not a list (its `include?` matches a
+  substring) and neither is a Hash (its `include?` matches a key); any other truthy answer means
+  "accepted".
+- An **ActiveRecord scope is refused**, declared or returned: `allowing -> { Category.enabled }` next
+  to a scalar type names the allowed *records*, which is a reference's question — `Relation#include?`
+  matches a record and nothing else, so every scalar value would be refused, the valid ones included.
+  Say which one you meant: `association :category do allowing … end` to resolve the record, or
+  `.pluck(:id)` to answer with a list of ids.
 - A frame the mapper could not call — `allowing true`, `allowing :a_method_name`, a rule demanding
   more than `(value, source_params)` or a required keyword — raises a `ConfigurationError` at the
   first mapping rather than on every request, as `authorize` refuses its own shape. The types that
@@ -391,8 +395,9 @@ end
 - `false` is weighed like any other value, on **any** param that declares an `allowing`: it goes
   through the declared type first, so an `:enumerated` consults its list instead of skipping it (and
   a `type :integer` handed `false` answers with its own format error, a `type :string` casts it to
-  `"false"`). A param that declares no constraint still takes `false` as sent, left to the column's
-  own cast.
+  `"false"`). ⚠️ A `type :custom` validator receives it too, where it never did before: write it to
+  answer for `false`. A param that declares no constraint still takes `false` as sent, left to the
+  column's own cast.
 - A **clearing request** is a value the caller asked to write, so it is framed too: under
   `nullable true` the rule is handed what is about to land — `nil`, or `[]` on a multi-valued param
   (`multiple true`) — and `allowing [true, false]` refuses the null it does not list where

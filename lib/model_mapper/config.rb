@@ -168,6 +168,9 @@ module ModelMapper
       return unless param_config.allowing_frames? || param_config.allowing_frames_elements?
 
       rule = param_config.allowing_value
+      if ModelMapper::ParamConfig.scope_rule?(rule)
+        raise ModelMapper::ConfigurationError, ModelMapper::ParamConfig.scope_rule_error(param_config.name)
+      end
       unless rule.is_a?(Proc) || rule.is_a?(Method) || ModelMapper::ParamConfig.list_rule?(rule)
         raise ModelMapper::ConfigurationError,
               "attribute `#{param_config.name}`: a framed `allowing` takes a Proc or a list, got " \

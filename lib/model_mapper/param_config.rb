@@ -13,12 +13,32 @@ module ModelMapper
     ALLOWING_ARGUMENTS = 2
 
     # Whether a rule — or what a rule returned — is a LIST, answering by inclusion rather than by its
-    # own truthiness: `allowing [1, 2, 3]`, and the scope idiom `allowing -> { Category.enabled }`
-    # written next to a scalar type, whose Relation would otherwise read as a plain truthy "accepted"
-    # and wave every value through. A String is not one: its `include?` matches a substring, which is
-    # never what a rule means.
+    # own truthiness: `allowing [1, 2, 3]`, a Set, a Range. A String is not one (its `include?`
+    # matches a substring) and neither is a Hash (its `include?` matches a KEY, so a rule answering
+    # `{ 'open' => false }` would accept `'open'`); any other truthy answer means "accepted".
     def self.list_rule?(value)
-      !value.is_a?(String) && !value.is_a?(Proc) && value.respond_to?(:include?)
+      return false if value.is_a?(String) || value.is_a?(Proc) || value.is_a?(Hash)
+
+      value.respond_to?(:include?)
+    end
+
+    # Whether a rule — or what a rule returned — is an ActiveRecord SCOPE: a relation, or a model
+    # class. A scope names the allowed RECORDS, which is a reference's question and not a frame's:
+    # `Relation#include?` matches a record and nothing else (`record.is_a?(klass)` comes first), so
+    # every scalar value would be refused, the valid ones included. Refused rather than guessed —
+    # the gem cannot know whether the scalar holds the scope's primary key, a name, or anything else.
+    def self.scope_rule?(value)
+      return true if defined?(ActiveRecord::Relation) && value.is_a?(ActiveRecord::Relation)
+
+      !!(defined?(ActiveRecord::Base) && value.is_a?(Class) && value < ActiveRecord::Base)
+    end
+
+    # What a frame answers when it is handed an ActiveRecord scope, declared or returned.
+    def self.scope_rule_error(name)
+      "attribute `#{name}`: a framed `allowing` cannot answer with an ActiveRecord scope — a " \
+        'relation holds records, so it would refuse every scalar value, the valid ones included. ' \
+        "Use `association #{name.inspect} do allowing … end` to resolve the record, or answer with " \
+        'a list of values (`.pluck(:id)`).'
     end
 
     # The types whose validator READS `allowing` for itself, each in its own way: the scope a
